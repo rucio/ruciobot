@@ -4,6 +4,8 @@ RucioBot is a GitHub App that automates routine pull request maintenance for the
 
 The bot authenticates as a GitHub App and interacts with the GitHub API through [PyGithub](https://pygithub.readthedocs.io). It inspects open pull requests, applies labels, posts comments, and closes PRs according to configurable rules.
 
+Responsible for PR merging in [rucio/ruciobot](https://github.com/rucio/ruciobot/): [Mayank Sharma](https://github.com/maany)
+
 ## Checks
 
 **Stale PRs.** A pull request is marked stale after a configurable number of weekdays without activity. If the PR has pending review requests, it is skipped. Stale PRs that remain inactive are eventually closed.
