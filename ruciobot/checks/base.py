@@ -25,7 +25,8 @@ def count_business_days(start: datetime, end: datetime) -> int:
     """
     days = 0
     current = start
-    while current < end:
+    # count current, when a full day has already passed before end
+    while current + timedelta(days=1) < end:
         current += timedelta(days=1)
         if current.weekday() < 5:  # 0=Mon … 4=Fri
             days += 1
