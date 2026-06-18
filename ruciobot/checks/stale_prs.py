@@ -4,8 +4,8 @@ Stale PR check: warn after WARN_DAYS of inactivity, close after CLOSE_DAYS more.
 
 from datetime import UTC, datetime
 
-from github import Github
 from github.PullRequest import PullRequest
+from github.Repository import Repository
 
 from .base import NO_BOT_LABEL, BaseCheck, count_business_days, is_excluded_from_bot
 
@@ -17,15 +17,13 @@ CLOSE_DAYS = 7  # Days after warning to close
 class StalePRCheck(BaseCheck):
     """Marks inactive PRs as stale and closes them if they remain inactive."""
 
+    summary = "Checking for stale PRs"
+
     def __init__(self, days_until_stale: int = WARN_DAYS):
         self.days_until_stale = days_until_stale
 
-    def run(self, gh: Github, repo_name: str) -> None:
-        print(f"Checking {repo_name} for stale PRs...")
-        repo = gh.get_repo(repo_name)
-        pulls = repo.get_pulls(state="open", sort="updated", direction="asc")
-        for pr in pulls:
-            process_pr(pr, self.days_until_stale)
+    def process(self, pr: PullRequest, repo: Repository) -> None:
+        process_pr(pr, self.days_until_stale)
 
 
 # Helpers

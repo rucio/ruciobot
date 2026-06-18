@@ -2,8 +2,8 @@
 Needs-rebase check: comment on PRs that cannot be merged due to conflicts.
 """
 
-from github import Github
 from github.PullRequest import PullRequest
+from github.Repository import Repository
 
 from .base import NO_BOT_LABEL, BaseCheck, is_excluded_from_bot
 
@@ -20,12 +20,10 @@ REBASE_COMMENT = (
 class NeedsRebaseCheck(BaseCheck):
     """Comments on and labels PRs that have merge conflicts."""
 
-    def run(self, gh: Github, repo_name: str) -> None:
-        print(f"Checking {repo_name} for PRs that need rebasing...")
-        repo = gh.get_repo(repo_name)
-        pulls = repo.get_pulls(state="open", sort="updated", direction="asc")
-        for pr in pulls:
-            process_needs_rebase_pr(pr)
+    summary = "Checking for PRs that need rebasing"
+
+    def process(self, pr: PullRequest, repo: Repository) -> None:
+        process_needs_rebase_pr(pr)
 
 
 # Helpers
