@@ -1,234 +1,288 @@
 """
-Tests for stale PR check.
+Tests for the stale PR check.
 
-All `updated_at` and "now" values are pinned to a concrete Monday (2026-03-09)
-so that `count_business_days` returns deterministic results regardless of when
-the test suite is run.  This is necessary because the check uses business-day
-counting which is sensitive to which calendar day `updated_at` falls on.
+The check now distinguishes who a PR is waiting on:
 
-Anchor:
-  NOW = Monday 2026-03-09 12:00 UTC
+  * AUTHOR_BLOCKED  - a reviewer engaged and the author has not responded since;
+                      this is the only state that is marked stale and closed.
+  * AWAITING_REVIEW - never reviewed, a pending review request, or the author
+                      acted most recently; this is labeled ``needs-review`` and
+                      never closed for inactivity.
+  * APPROVED        - waiting on a merge; left alone.
 
-Business-day offsets from NOW (all going backwards in time):
-  1 bd  ago = Friday  2026-03-06  (Mon – skip Sat/Sun – Fri)
-  2 bds ago = Thursday 2026-03-05
-  5 bds ago = Monday  2026-03-02
-  7 bds ago = Thursday 2026-02-26
-  8 bds ago = Wednesday 2026-02-25
- 14 bds ago = Monday  2026-02-23  (exactly WARN_DAYS)
- 15 bds ago = Friday  2026-02-20  (WARN_DAYS + 1)
- 21 bds ago = Monday  2026-02-09  (CLOSE_DAYS=7 bds after WARN_DAYS: just testing CLOSE_DAYS)
+All timestamps are pinned to a concrete Monday (2026-03-09) so that
+``count_business_days`` is deterministic regardless of when the suite runs.
 """
 
 import unittest
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from ruciobot.checks.base import NO_BOT_LABEL
 from ruciobot.checks.stale_prs import (
     CLOSE_DAYS,
+    NEEDS_REVIEW_LABEL,
     STALE_LABEL,
     WARN_DAYS,
     process_pr,
 )
 
-# Pinned "now" for all tests — a Monday at noon UTC.
+# Pinned "now": a Monday at noon UTC.
 NOW = datetime(2026, 3, 9, 12, 0, tzinfo=UTC)
 
 
 def business_days_before(n: int, anchor: datetime = NOW) -> datetime:
-    """Return the datetime that is exactly *n* business days before *anchor*."""
+    """Return the datetime exactly *n* business days before *anchor*."""
     current = anchor
     counted = 0
     while counted < n:
         current -= timedelta(days=1)
-        if current.weekday() < 5:  # Mon–Fri
+        if current.weekday() < 5:  # Mon-Fri
             counted += 1
     return current
 
 
-# Pre-computed anchor offsets used across tests
-ACTIVE_DATE = business_days_before(2)  # 2 bds ago → Thu 2025-03-06 (< WARN_DAYS)
-STALE_WARN_DATE = business_days_before(WARN_DAYS + 1)  # 15 bds ago → well past threshold
-CLOSE_DATE = business_days_before(CLOSE_DAYS + 1)  # 8 bds ago → past CLOSE_DAYS (7)
-RECENT_DATE = business_days_before(1)  # 1 bd ago → Fri 2025-03-07
+# Anchored timestamps.
+RECENT = business_days_before(2)  # well within the stale threshold
+PAST_CLOSE = business_days_before(CLOSE_DAYS + 1)  # past the close threshold (8 bd)
+PAST_STALE = business_days_before(WARN_DAYS + 1)  # past the stale threshold (15 bd)
+OLD_REVIEW = business_days_before(20)
+OLD_COMMIT = business_days_before(40)
+
+
+# Mock builders
+
+
+class _PagedList(list):
+    """A list that also exposes PyGithub's ``totalCount`` attribute."""
+
+    @property
+    def totalCount(self) -> int:
+        return len(self)
+
+
+def _user(login):
+    return SimpleNamespace(login=login)
+
+
+def _review(state, login, submitted_at):
+    return SimpleNamespace(state=state, user=_user(login), submitted_at=submitted_at)
+
+
+def _commit(date):
+    return SimpleNamespace(commit=SimpleNamespace(committer=SimpleNamespace(date=date)))
+
+
+def _comment(login, created_at):
+    return SimpleNamespace(user=_user(login), created_at=created_at)
+
+
+def make_pr(
+    *,
+    updated_at,
+    labels=None,
+    author="alice",
+    reviews=None,
+    requested_users=None,
+    requested_teams=0,
+    commits=None,
+    comments=None,
+    number=1,
+):
+    pr = MagicMock()
+    pr.number = number
+    pr.title = f"PR {number}"
+    pr.updated_at = updated_at
+    pr.user = _user(author) if author else None
+    pr.labels = [SimpleNamespace(name=name) for name in (labels or [])]
+    pr.get_reviews.return_value = list(reviews or [])
+    users = _PagedList(_user(u) for u in (requested_users or []))
+    teams = _PagedList(None for _ in range(requested_teams))
+    pr.get_review_requests.return_value = (users, teams)
+    pr.get_commits.return_value = list(commits or [])
+    pr.get_issue_comments.return_value = list(comments or [])
+    return pr
+
+
+def run_check(pr, now=NOW):
+    with patch("ruciobot.checks.stale_prs.datetime") as mock_dt:
+        mock_dt.now.return_value = now
+        process_pr(pr, WARN_DAYS)
 
 
 class TestStalePRs(unittest.TestCase):
-    def _mock_now(self, mock_dt):
-        """Configure the datetime mock to return NOW for datetime.now()."""
-        mock_dt.now.return_value = NOW
+    # Author-blocked: the only state that is staled and closed.
 
-    def create_mock_pr(
-        self,
-        number,
-        updated_at,
-        labels=[],
-        pending_reviewers=0,
-        pending_teams=0,
-        approved_reviews=0,
-    ):
-        pr = MagicMock()
-        pr.number = number
-        pr.title = f"PR {number}"
-        pr.updated_at = updated_at
-
-        label_mocks = [MagicMock(name=lbl) for lbl in labels]
-        for m, lbl in zip(label_mocks, labels):
-            m.name = lbl
-        pr.labels = label_mocks
-
-        users_requested = MagicMock()
-        users_requested.totalCount = pending_reviewers
-        teams_requested = MagicMock()
-        teams_requested.totalCount = pending_teams
-        pr.get_review_requests.return_value = (users_requested, teams_requested)
-
-        reviews = []
-        for _ in range(approved_reviews):
-            r = MagicMock()
-            r.state = "APPROVED"
-            reviews.append(r)
-        pr.get_reviews.return_value = reviews
-
-        return pr
-
-    # Core behaviour tests
-
-    def test_warns_inactive_pr(self):
-        """Inactive PR (> WARN_DAYS business days) with no pending reviewers gets warned."""
-        pr = self.create_mock_pr(1, updated_at=STALE_WARN_DATE, labels=[], pending_reviewers=0)
-        with patch("ruciobot.checks.stale_prs.datetime") as mock_dt:
-            self._mock_now(mock_dt)
-            process_pr(pr, WARN_DAYS)
-        pr.add_to_labels.assert_called_with(STALE_LABEL)
+    def test_marks_author_blocked_pr_stale(self):
+        """Reviewer requested changes, author silent since: mark stale."""
+        pr = make_pr(
+            updated_at=PAST_STALE,
+            reviews=[_review("CHANGES_REQUESTED", "bob", PAST_STALE)],
+            commits=[_commit(OLD_COMMIT)],
+        )
+        run_check(pr)
+        pr.add_to_labels.assert_called_once_with(STALE_LABEL)
         pr.create_issue_comment.assert_called_once()
-
-    def test_ignores_active_pr(self):
-        """Active PR (< WARN_DAYS business days) is ignored."""
-        pr = self.create_mock_pr(1, updated_at=ACTIVE_DATE, labels=[])
-        with patch("ruciobot.checks.stale_prs.datetime") as mock_dt:
-            self._mock_now(mock_dt)
-            process_pr(pr, WARN_DAYS)
-        pr.add_to_labels.assert_not_called()
-        pr.create_issue_comment.assert_not_called()
-
-    def test_closes_stale_pr(self):
-        """Stale-labeled PR with further inactivity past CLOSE_DAYS is closed."""
-        pr = self.create_mock_pr(1, updated_at=CLOSE_DATE, labels=[STALE_LABEL])
-        with patch("ruciobot.checks.stale_prs.datetime") as mock_dt:
-            self._mock_now(mock_dt)
-            process_pr(pr, WARN_DAYS)
-        pr.edit.assert_called_with(state="closed")
-        pr.create_issue_comment.assert_called()
-
-    def test_ignores_recently_active_stale_pr(self):
-        """Stale-labeled PR that was recently updated is NOT closed."""
-        pr = self.create_mock_pr(1, updated_at=ACTIVE_DATE, labels=[STALE_LABEL])
-        with patch("ruciobot.checks.stale_prs.datetime") as mock_dt:
-            self._mock_now(mock_dt)
-            process_pr(pr, WARN_DAYS)
         pr.edit.assert_not_called()
 
-    def test_skips_pr_awaiting_reviewer(self):
-        """Inactive PR with pending review requests is NOT marked stale."""
-        pr = self.create_mock_pr(1, updated_at=STALE_WARN_DATE, labels=[], pending_reviewers=1)
-        with patch("ruciobot.checks.stale_prs.datetime") as mock_dt:
-            self._mock_now(mock_dt)
-            process_pr(pr, WARN_DAYS)
+    def test_closes_author_blocked_stale_pr(self):
+        """A stale-labeled, still author-blocked PR past CLOSE_DAYS is closed."""
+        pr = make_pr(
+            updated_at=PAST_CLOSE,
+            labels=[STALE_LABEL],
+            reviews=[_review("CHANGES_REQUESTED", "bob", OLD_REVIEW)],
+            commits=[_commit(OLD_COMMIT)],
+        )
+        run_check(pr)
+        pr.edit.assert_called_once_with(state="closed")
+        pr.create_issue_comment.assert_called_once()
+
+    def test_does_not_close_author_blocked_pr_before_threshold(self):
+        """A stale-labeled author-blocked PR not yet past CLOSE_DAYS is left open."""
+        pr = make_pr(
+            updated_at=business_days_before(CLOSE_DAYS - 1),
+            labels=[STALE_LABEL],
+            reviews=[_review("CHANGES_REQUESTED", "bob", OLD_REVIEW)],
+            commits=[_commit(OLD_COMMIT)],
+        )
+        run_check(pr)
+        pr.edit.assert_not_called()
+
+    # Awaiting review: never closed for inactivity.
+
+    def test_never_reviewed_pr_is_flagged_not_staled(self):
+        """An inactive PR that has never been reviewed is labeled needs-review, not stale."""
+        pr = make_pr(updated_at=PAST_STALE, commits=[_commit(PAST_STALE)])
+        run_check(pr)
+        pr.add_to_labels.assert_called_once_with(NEEDS_REVIEW_LABEL)
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+
+    def test_author_responded_after_review_is_not_staled(self):
+        """Author pushed after the last review (the #8516 case): awaiting review, not stale."""
+        pr = make_pr(
+            updated_at=PAST_STALE,
+            reviews=[_review("COMMENTED", "bob", OLD_REVIEW)],
+            commits=[_commit(PAST_STALE)],  # author push is more recent than the review
+        )
+        run_check(pr)
+        pr.add_to_labels.assert_called_once_with(NEEDS_REVIEW_LABEL)
+        pr.edit.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
+        # The stale path must not run.
+        self.assertNotIn(((STALE_LABEL,), {}), [c for c in pr.add_to_labels.call_args_list])
+
+    def test_pending_review_request_is_labeled_not_staled(self):
+        """An inactive PR with a pending review request is labeled needs-review, not stale."""
+        pr = make_pr(updated_at=PAST_STALE, requested_users=["bob"])
+        run_check(pr)
+        pr.add_to_labels.assert_called_once_with(NEEDS_REVIEW_LABEL)
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+
+    def test_already_labeled_awaiting_review_is_left_alone(self):
+        """A PR already labeled needs-review gets no further label or comment."""
+        pr = make_pr(
+            updated_at=PAST_STALE,
+            labels=[NEEDS_REVIEW_LABEL],
+            commits=[_commit(PAST_STALE)],
+        )
+        run_check(pr)
+        pr.create_issue_comment.assert_not_called()
         pr.add_to_labels.assert_not_called()
+        pr.edit.assert_not_called()
+
+    # Label transitions.
+
+    def test_clears_stale_label_when_author_responds(self):
+        """A stale PR where the author pushed after the review has the stale label lifted."""
+        pr = make_pr(
+            updated_at=RECENT,
+            labels=[STALE_LABEL],
+            reviews=[_review("CHANGES_REQUESTED", "bob", business_days_before(10))],
+            commits=[_commit(RECENT)],
+        )
+        run_check(pr)
+        pr.remove_from_labels.assert_called_once_with(STALE_LABEL)
+        pr.edit.assert_not_called()
+        pr.add_to_labels.assert_not_called()  # still within threshold, so no needs-review yet
         pr.create_issue_comment.assert_not_called()
 
-    def test_marks_stale_when_no_pending_reviewers(self):
-        """Inactive PR without pending reviewers IS marked stale."""
-        pr = self.create_mock_pr(1, updated_at=STALE_WARN_DATE, labels=[], pending_reviewers=0)
-        with patch("ruciobot.checks.stale_prs.datetime") as mock_dt:
-            self._mock_now(mock_dt)
-            process_pr(pr, WARN_DAYS)
-        pr.add_to_labels.assert_called_with(STALE_LABEL)
-        pr.create_issue_comment.assert_called_once()
+    def test_clears_needs_review_label_when_author_becomes_blocked(self):
+        """A needs-review PR that gets a fresh changes-request has the label removed."""
+        pr = make_pr(
+            updated_at=business_days_before(1),
+            labels=[NEEDS_REVIEW_LABEL],
+            reviews=[_review("CHANGES_REQUESTED", "bob", business_days_before(1))],
+            commits=[_commit(business_days_before(5))],
+        )
+        run_check(pr)
+        pr.remove_from_labels.assert_called_once_with(NEEDS_REVIEW_LABEL)
+        pr.add_to_labels.assert_not_called()
+        pr.edit.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
+
+    # Approved: waiting on a merge.
+
+    def test_approved_pr_is_left_alone(self):
+        """An approved but unmerged PR is neither staled nor flagged."""
+        pr = make_pr(updated_at=PAST_STALE, reviews=[_review("APPROVED", "bob", OLD_REVIEW)])
+        run_check(pr)
+        pr.add_to_labels.assert_not_called()
+        pr.remove_from_labels.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+
+    def test_approved_pr_clears_needs_review_label(self):
+        """An approved PR still carrying needs-review has that label removed."""
+        pr = make_pr(
+            updated_at=PAST_STALE,
+            labels=[NEEDS_REVIEW_LABEL],
+            reviews=[_review("APPROVED", "bob", OLD_REVIEW)],
+        )
+        run_check(pr)
+        pr.remove_from_labels.assert_called_once_with(NEEDS_REVIEW_LABEL)
+        pr.add_to_labels.assert_not_called()
+        pr.edit.assert_not_called()
+
+    # Exclusions and gating.
 
     def test_skips_pr_with_no_bot_label(self):
-        """PR with 'no-bot' label is completely skipped by all stale checks."""
-        from ruciobot.checks.base import NO_BOT_LABEL
-
-        pr = self.create_mock_pr(1, updated_at=STALE_WARN_DATE, labels=[NO_BOT_LABEL])
-        with patch("ruciobot.checks.stale_prs.datetime") as mock_dt:
-            self._mock_now(mock_dt)
-            process_pr(pr, WARN_DAYS)
-        pr.add_to_labels.assert_not_called()
-        pr.create_issue_comment.assert_not_called()
-        pr.edit.assert_not_called()
-
-    def test_skips_pr_with_approved_review(self):
-        """Inactive PR that already has an approved review is NOT marked stale."""
-        pr = self.create_mock_pr(1, updated_at=STALE_WARN_DATE, labels=[], approved_reviews=1)
-        with patch("ruciobot.checks.stale_prs.datetime") as mock_dt:
-            self._mock_now(mock_dt)
-            process_pr(pr, WARN_DAYS)
-        pr.add_to_labels.assert_not_called()
-        pr.create_issue_comment.assert_not_called()
-
-    def test_removes_stale_label_when_reviewer_assigned_after_stale(self):
-        """Stale-labeled PR that later gets a reviewer assigned has stale label removed."""
-        pr = self.create_mock_pr(
-            1, updated_at=CLOSE_DATE, labels=[STALE_LABEL], pending_reviewers=1
+        """A no-bot PR is skipped entirely, before any classification."""
+        pr = make_pr(
+            updated_at=PAST_STALE,
+            labels=[NO_BOT_LABEL],
+            reviews=[_review("CHANGES_REQUESTED", "bob", OLD_REVIEW)],
         )
-        with patch("ruciobot.checks.stale_prs.datetime") as mock_dt:
-            self._mock_now(mock_dt)
-            process_pr(pr, WARN_DAYS)
-        pr.remove_from_labels.assert_called_with(STALE_LABEL)
+        run_check(pr)
+        pr.add_to_labels.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+        pr.get_reviews.assert_not_called()
+
+    def test_active_pr_short_circuits_without_api_calls(self):
+        """A recently active, unlabeled PR returns before any review/commit lookups."""
+        pr = make_pr(updated_at=RECENT)
+        run_check(pr)
+        pr.get_reviews.assert_not_called()
+        pr.get_commits.assert_not_called()
+        pr.add_to_labels.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
         pr.edit.assert_not_called()
 
-    def test_removes_stale_label_when_approved_after_stale(self):
-        """Stale-labeled PR that later gets approved has stale label removed."""
-        pr = self.create_mock_pr(1, updated_at=CLOSE_DATE, labels=[STALE_LABEL], approved_reviews=1)
-        with patch("ruciobot.checks.stale_prs.datetime") as mock_dt:
-            self._mock_now(mock_dt)
-            process_pr(pr, WARN_DAYS)
-        pr.remove_from_labels.assert_called_with(STALE_LABEL)
-        pr.edit.assert_not_called()
-
-    # Weekend-aware tests
-
-    def test_does_not_warn_when_only_weekend_has_passed(self):
-        """PR pushed on a Friday; bot runs on Sunday — 0 business days elapsed, no warning.
-
-        Timeline:
-          - updated_at = Friday 2026-03-06 17:00 UTC
-          - "now"      = Sunday 2026-03-08 09:00 UTC
-          Business days between Fri 17:00 and Sun 09:00 = 0  (< WARN_DAYS=14).
-        """
+    def test_weekend_only_gap_takes_no_action(self):
+        """A Friday-to-Sunday gap is 0 business days, so nothing happens."""
         friday = datetime(2026, 3, 6, 17, 0, tzinfo=UTC)
         sunday = datetime(2026, 3, 8, 9, 0, tzinfo=UTC)
-
-        pr = self.create_mock_pr(1, updated_at=friday, labels=[])
-
-        with patch("ruciobot.checks.stale_prs.datetime") as mock_dt:
-            mock_dt.now.return_value = sunday
-            process_pr(pr, WARN_DAYS)
-
+        pr = make_pr(
+            updated_at=friday,
+            reviews=[_review("CHANGES_REQUESTED", "bob", business_days_before(10, friday))],
+        )
+        run_check(pr, now=sunday)
+        pr.get_reviews.assert_not_called()  # gated out by the business-day check
         pr.add_to_labels.assert_not_called()
-        pr.create_issue_comment.assert_not_called()
-
-    def test_warns_after_enough_business_days_spanning_weekend(self):
-        """PR pushed 3 weeks ago on a Monday; 15 business days elapsed → warn.
-
-        Timeline:
-          - updated_at = Monday 2026-02-16 09:00 UTC
-          - "now"      = Monday 2026-03-09 09:00 UTC
-          3 calendar weeks * 5 weekdays = 15 business days >= WARN_DAYS (14).
-        """
-        three_weeks_ago = datetime(2026, 2, 16, 9, 0, tzinfo=UTC)
-        now_monday = datetime(2026, 3, 9, 9, 0, tzinfo=UTC)
-
-        pr = self.create_mock_pr(1, updated_at=three_weeks_ago, labels=[])
-
-        with patch("ruciobot.checks.stale_prs.datetime") as mock_dt:
-            mock_dt.now.return_value = now_monday
-            process_pr(pr, WARN_DAYS)
-
-        pr.add_to_labels.assert_called_with(STALE_LABEL)
-        pr.create_issue_comment.assert_called_once()
+        pr.edit.assert_not_called()
 
 
 if __name__ == "__main__":

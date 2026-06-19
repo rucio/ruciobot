@@ -4,8 +4,8 @@ Failing-tests check: warn after WARN_DAYS of inactivity, close after CLOSE_DAYS 
 
 from datetime import UTC, datetime
 
-from github import Github
 from github.PullRequest import PullRequest
+from github.Repository import Repository
 
 from .base import NO_BOT_LABEL, BaseCheck, count_business_days, is_excluded_from_bot
 
@@ -17,12 +17,10 @@ FAILING_TESTS_CLOSE_DAYS = 3  # Days of inactivity (after warning) before closin
 class FailingTestsCheck(BaseCheck):
     """Warns and closes PRs that have failing CI checks and remain inactive."""
 
-    def run(self, gh: Github, repo_name: str) -> None:
-        print(f"Checking {repo_name} for PRs with failing tests...")
-        repo = gh.get_repo(repo_name)
-        pulls = repo.get_pulls(state="open", sort="updated", direction="asc")
-        for pr in pulls:
-            process_failing_test_pr(pr, repo)
+    summary = "Checking for PRs with failing tests"
+
+    def process(self, pr: PullRequest, repo: Repository) -> None:
+        process_failing_test_pr(pr, repo)
 
 
 # Helpers
