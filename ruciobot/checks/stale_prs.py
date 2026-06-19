@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from github.PullRequest import PullRequest
 from github.Repository import Repository
 
-from .base import NO_BOT_LABEL, BaseCheck, count_business_days, is_excluded_from_bot
+from .base import BaseCheck, count_business_days, exclusion_reason
 
 STALE_LABEL = "stale"
 NEEDS_REVIEW_LABEL = "needs-review"
@@ -47,8 +47,9 @@ class StalePRCheck(BaseCheck):
 
 def process_pr(pr: PullRequest, days_until_stale: int) -> None:
     """Apply the stale / needs-review logic to a single PR."""
-    if is_excluded_from_bot(pr):
-        print(f"  [SKIP] PR #{pr.number} has '{NO_BOT_LABEL}' label. Skipping.")
+    reason = exclusion_reason(pr)
+    if reason:
+        print(f"  [SKIP] PR #{pr.number} {reason}. Skipping.")
         return
 
     now = datetime.now(UTC)

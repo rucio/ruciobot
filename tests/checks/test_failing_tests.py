@@ -171,6 +171,18 @@ class TestFailingTestPRs(unittest.TestCase):
         pr.create_issue_comment.assert_not_called()
         pr.edit.assert_not_called()
 
+    def test_skips_dependabot_pr(self):
+        """PR opened by Dependabot is skipped, even with failing tests and inactivity."""
+        pr = self.create_mock_pr(1, updated_at=WARN_DATE, labels=[])
+        pr.user.login = "dependabot[bot]"
+        repo = self.create_mock_repo(["failure"])
+        with patch("ruciobot.checks.failing_tests.datetime") as mock_dt:
+            self._mock_now(mock_dt)
+            process_failing_test_pr(pr, repo)
+        pr.add_to_labels.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+
     # Weekend-aware tests
 
     def test_does_not_warn_when_only_weekend_has_passed(self):

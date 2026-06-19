@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from github.PullRequest import PullRequest
 from github.Repository import Repository
 
-from .base import NO_BOT_LABEL, BaseCheck, count_business_days, is_excluded_from_bot
+from .base import BaseCheck, count_business_days, exclusion_reason
 
 FAILING_TESTS_LABEL = "failing-tests"
 FAILING_TESTS_WARN_DAYS = 1  # Days of inactivity before warning
@@ -28,8 +28,9 @@ class FailingTestsCheck(BaseCheck):
 
 def process_failing_test_pr(pr: PullRequest, repo) -> None:
     """Process a single PR to check for failing tests and apply warn/close logic."""
-    if is_excluded_from_bot(pr):
-        print(f"  [SKIP] PR #{pr.number} has '{NO_BOT_LABEL}' label. Skipping.")
+    reason = exclusion_reason(pr)
+    if reason:
+        print(f"  [SKIP] PR #{pr.number} {reason}. Skipping.")
         return
     now = datetime.now(UTC)
     assert pr.updated_at is not None, f"PR #{pr.number} has no updated_at timestamp"
