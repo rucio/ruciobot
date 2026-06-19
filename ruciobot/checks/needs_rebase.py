@@ -5,7 +5,7 @@ Needs-rebase check: comment on PRs that cannot be merged due to conflicts.
 from github.PullRequest import PullRequest
 from github.Repository import Repository
 
-from .base import NO_BOT_LABEL, BaseCheck, is_excluded_from_bot
+from .base import BaseCheck, exclusion_reason
 
 NEEDS_REBASE_LABEL = "needs-rebase"
 
@@ -31,8 +31,9 @@ class NeedsRebaseCheck(BaseCheck):
 
 def process_needs_rebase_pr(pr: PullRequest) -> None:
     """Comment on and label a PR if it has unresolved merge conflicts."""
-    if is_excluded_from_bot(pr):
-        print(f"  [SKIP] PR #{pr.number} has '{NO_BOT_LABEL}' label. Skipping.")
+    reason = exclusion_reason(pr)
+    if reason:
+        print(f"  [SKIP] PR #{pr.number} {reason}. Skipping.")
         return
 
     mergeable = pr.mergeable  # None = GitHub hasn't computed it yet; False = conflicts

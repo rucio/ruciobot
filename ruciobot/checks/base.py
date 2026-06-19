@@ -22,10 +22,32 @@ MAX_SECONDARY_RATE_LIMIT_RETRIES = 3
 DEFAULT_RETRY_AFTER_SECONDS = 60
 MAX_RETRY_AFTER_SECONDS = 300  # cap, so an oversized Retry-After cannot hang the job
 
+# Logins Dependabot uses to open PRs. Dependency-update PRs are managed by
+# Dependabot itself, so the bot leaves them alone: it must not mark them stale,
+# nag them to rebase, or close them for failing tests.
+DEPENDABOT_LOGINS = frozenset({"dependabot[bot]", "dependabot-preview[bot]"})
 
-def is_excluded_from_bot(pr) -> bool:
-    """Return True if the PR carries the no-bot exclusion label."""
-    return NO_BOT_LABEL in [lbl.name for lbl in pr.labels]
+
+def is_dependabot_pr(pr) -> bool:
+    """Return True if the PR was opened by Dependabot."""
+    user = getattr(pr, "user", None)
+    login = getattr(user, "login", None)
+    return login in DEPENDABOT_LOGINS
+
+
+def exclusion_reason(pr) -> str | None:
+    """Return why the bot should skip *pr*, or ``None`` if it should not.
+
+    A PR is excluded from every bot check when it was opened by Dependabot or
+    when it carries the ``no-bot`` label. The returned string is phrased to read
+    naturally after the PR reference in a log line, e.g.
+    ``PR #5 was opened by Dependabot``.
+    """
+    if is_dependabot_pr(pr):
+        return "was opened by Dependabot"
+    if NO_BOT_LABEL in [lbl.name for lbl in pr.labels]:
+        return f"has '{NO_BOT_LABEL}' label"
+    return None
 
 
 def count_business_days(start: datetime, end: datetime) -> int:

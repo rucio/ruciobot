@@ -261,6 +261,19 @@ class TestStalePRs(unittest.TestCase):
         pr.edit.assert_not_called()
         pr.get_reviews.assert_not_called()
 
+    def test_skips_dependabot_pr(self):
+        """A Dependabot PR is skipped entirely, before any classification."""
+        pr = make_pr(
+            updated_at=PAST_STALE,
+            author="dependabot[bot]",
+            reviews=[_review("CHANGES_REQUESTED", "bob", OLD_REVIEW)],
+        )
+        run_check(pr)
+        pr.add_to_labels.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+        pr.get_reviews.assert_not_called()
+
     def test_active_pr_short_circuits_without_api_calls(self):
         """A recently active, unlabeled PR returns before any review/commit lookups."""
         pr = make_pr(updated_at=RECENT)

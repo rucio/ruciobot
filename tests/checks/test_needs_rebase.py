@@ -73,6 +73,15 @@ class TestNeedsRebaseCheck(unittest.TestCase):
         pr.create_issue_comment.assert_not_called()
         pr.add_to_labels.assert_not_called()
 
+    # Dependabot author : skipped regardless of merge state
+    def test_skips_dependabot_pr(self):
+        """PR opened by Dependabot is skipped, even if it has conflicts."""
+        pr = self._make_pr(7, mergeable=False)
+        pr.user.login = "dependabot[bot]"
+        process_needs_rebase_pr(pr)
+        pr.create_issue_comment.assert_not_called()
+        pr.add_to_labels.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
