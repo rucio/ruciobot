@@ -35,16 +35,28 @@ def is_dependabot_pr(pr) -> bool:
     return login in DEPENDABOT_LOGINS
 
 
+def is_draft_pr(pr) -> bool:
+    """Return True if the PR is still a draft.
+
+    Draft PRs are explicitly marked work in progress, so nothing is owed by the
+    author yet. ``PullRequest.draft`` is a plain bool on real PRs; the default
+    keeps this safe for objects that do not set the attribute.
+    """
+    return getattr(pr, "draft", False) is True
+
+
 def exclusion_reason(pr) -> str | None:
     """Return why the bot should skip *pr*, or ``None`` if it should not.
 
-    A PR is excluded from every bot check when it was opened by Dependabot or
-    when it carries the ``no-bot`` label. The returned string is phrased to read
-    naturally after the PR reference in a log line, e.g.
+    A PR is excluded from every bot check when it was opened by Dependabot, is
+    still a draft, or carries the ``no-bot`` label. The returned string is
+    phrased to read naturally after the PR reference in a log line, e.g.
     ``PR #5 was opened by Dependabot``.
     """
     if is_dependabot_pr(pr):
         return "was opened by Dependabot"
+    if is_draft_pr(pr):
+        return "is a draft"
     if NO_BOT_LABEL in [lbl.name for lbl in pr.labels]:
         return f"has '{NO_BOT_LABEL}' label"
     return None

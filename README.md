@@ -14,7 +14,7 @@ Responsible for PR merging in [rucio/ruciobot](https://github.com/rucio/ruciobot
 
 **Needs rebase.** A pull request that has merge conflicts with its target branch receives a comment asking the author to rebase, and is labeled `needs-rebase`. Once the conflicts are resolved, the label is removed automatically on the next run.
 
-PRs opened by [Dependabot](https://docs.github.com/en/code-security/dependabot) and PRs labeled `no-bot` are excluded from all checks. More checks will be added over time. To request a new feature or report a bug, please open an issue.
+Draft pull requests, PRs opened by [Dependabot](https://docs.github.com/en/code-security/dependabot), and PRs labeled `no-bot` are excluded from all checks. More checks will be added over time. To request a new feature or report a bug, please open an issue.
 
 ## Running the bot
 
