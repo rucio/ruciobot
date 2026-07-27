@@ -18,12 +18,9 @@ jobs:
       - name: Install RucioBot
         run: uv sync
 
-      - name: Run Stale Check
-        env:
-          RUCIO_BOT_APP_ID: ${{ secrets.RUCIO_BOT_APP_ID }}
-          RUCIO_BOT_PRIVATE_KEY: ${{ secrets.RUCIO_BOT_PRIVATE_KEY }}
-        run: uv run ruciobot --action stale --repo rucio/rucio
-
+      # The checks run in precedence order (failing-tests > needs-rebase >
+      # stale), so the labels a higher-priority check applies are already in
+      # place when a lower-priority check decides whether to defer.
       - name: Run Failing Tests Check
         env:
           RUCIO_BOT_APP_ID: ${{ secrets.RUCIO_BOT_APP_ID }}
@@ -35,3 +32,9 @@ jobs:
           RUCIO_BOT_APP_ID: ${{ secrets.RUCIO_BOT_APP_ID }}
           RUCIO_BOT_PRIVATE_KEY: ${{ secrets.RUCIO_BOT_PRIVATE_KEY }}
         run: uv run ruciobot --action needs-rebase --repo rucio/rucio
+
+      - name: Run Stale Check
+        env:
+          RUCIO_BOT_APP_ID: ${{ secrets.RUCIO_BOT_APP_ID }}
+          RUCIO_BOT_PRIVATE_KEY: ${{ secrets.RUCIO_BOT_PRIVATE_KEY }}
+        run: uv run ruciobot --action stale --repo rucio/rucio
