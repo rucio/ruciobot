@@ -8,6 +8,10 @@ closed; after ``NEEDS_REBASE_CLOSE_DAYS`` further weekdays of inactivity it is
 closed. Whether the warning was already issued is tracked through a hidden
 marker in the warning comment itself; the warning is deleted once the
 conflicts are resolved, so a later conflict starts a fresh cycle.
+
+A PR that also carries the ``failing-tests`` label is left to the
+failing-tests check, which takes precedence: the escalation pauses while
+that label is present, though flagging and label clearing still run.
 """
 
 from datetime import UTC, datetime
@@ -17,6 +21,7 @@ from github.PullRequest import PullRequest
 from github.Repository import Repository
 
 from .base import BaseCheck, count_business_days, exclusion_reason
+from .failing_tests import FAILING_TESTS_LABEL
 
 NEEDS_REBASE_LABEL = "needs-rebase"
 NEEDS_REBASE_WARN_DAYS = 5  # Weekdays of inactivity before the closure warning.
@@ -106,6 +111,13 @@ def _escalate_inactive_pr(pr: PullRequest) -> None:
     The escalation clock runs on ``updated_at``: the initial flag comment, the
     warning comment, and any author activity each reset it.
     """
+    if FAILING_TESTS_LABEL in [lbl.name for lbl in pr.labels]:
+        print(
+            f"  [SKIP] PR #{pr.number} has '{FAILING_TESTS_LABEL}' label; "
+            "the failing-tests check takes precedence. Pausing escalation."
+        )
+        return
+
     now = datetime.now(UTC)
     assert pr.updated_at is not None, f"PR #{pr.number} has no updated_at timestamp"
     inactive_days = count_business_days(pr.updated_at.replace(tzinfo=UTC), now)

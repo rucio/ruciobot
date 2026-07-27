@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from github.GithubException import RateLimitExceededException
 
+from ruciobot.checks.failing_tests import FAILING_TESTS_LABEL
 from ruciobot.checks.needs_rebase import (
     NEEDS_REBASE_CLOSE_DAYS,
     NEEDS_REBASE_LABEL,
@@ -201,6 +202,27 @@ class TestNeedsRebaseCheck(unittest.TestCase):
         pr.get_issue_comments.side_effect = RateLimitExceededException(403, {"message": "hit"}, {})
         with self.assertRaises(RateLimitExceededException):
             self._run(pr)
+
+    # Failing-tests takes precedence: escalation pauses while its label is present
+
+    def test_failing_tests_label_pauses_escalation(self):
+        """A conflicted PR that also has failing tests is left to the failing-tests check."""
+        pr = self._make_pr(
+            16,
+            mergeable=False,
+            labels=[NEEDS_REBASE_LABEL, FAILING_TESTS_LABEL],
+            updated_at=PAST_CLOSE,
+        )
+        self._run(pr)
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+        pr.get_issue_comments.assert_not_called()
+
+    def test_failing_tests_label_does_not_block_label_clearing(self):
+        """Resolution still clears the needs-rebase label while failing-tests is present."""
+        pr = self._make_pr(17, mergeable=True, labels=[NEEDS_REBASE_LABEL, FAILING_TESTS_LABEL])
+        self._run(pr)
+        pr.remove_from_labels.assert_called_once_with(NEEDS_REBASE_LABEL)
 
     # Resolution cleans up the warning so a future conflict starts fresh
 
