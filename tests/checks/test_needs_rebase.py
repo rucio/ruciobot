@@ -1,4 +1,5 @@
 import unittest
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 from ruciobot.checks.needs_rebase import (
@@ -9,10 +10,17 @@ from ruciobot.checks.needs_rebase import (
 
 
 class TestNeedsRebaseCheck(unittest.TestCase):
-    def _make_pr(self, number: int, mergeable, labels: list[str] | None = None):
+    def _make_pr(
+        self,
+        number: int,
+        mergeable,
+        labels: list[str] | None = None,
+        updated_at: datetime | None = None,
+    ):
         pr = MagicMock()
         pr.number = number
         pr.mergeable = mergeable
+        pr.updated_at = updated_at or datetime.now(UTC)
 
         label_mocks = []
         for lbl in labels or []:
@@ -31,13 +39,58 @@ class TestNeedsRebaseCheck(unittest.TestCase):
         pr.create_issue_comment.assert_called_once_with(REBASE_COMMENT)
         pr.add_to_labels.assert_called_once_with(NEEDS_REBASE_LABEL)
 
-    # Already labeled : no duplicate comment / label
+    # Already labeled, recent activity : no duplicate comment / label
     def test_skips_already_labeled_pr(self):
-        """A PR already carrying the needs-rebase label should not be re-commented on."""
+        """A recently active PR carrying the needs-rebase label should not be re-commented on."""
         pr = self._make_pr(2, mergeable=False, labels=[NEEDS_REBASE_LABEL])
         process_needs_rebase_pr(pr)
         pr.create_issue_comment.assert_not_called()
         pr.add_to_labels.assert_not_called()
+
+    # Already labeled, long inactivity : reminder ping, but never closed
+    def test_reminds_inactive_labeled_pr(self):
+        """A labeled PR inactive for REMIND_DAYS+ weekdays gets a reminder mentioning the author."""
+        pr = self._make_pr(
+            8,
+            mergeable=False,
+            labels=[NEEDS_REBASE_LABEL],
+            updated_at=datetime.now(UTC) - timedelta(days=14),  # 10 weekdays
+        )
+        pr.user.login = "alice"
+        process_needs_rebase_pr(pr)
+        pr.create_issue_comment.assert_called_once()
+        reminder = pr.create_issue_comment.call_args[0][0]
+        self.assertIn("@alice", reminder)
+        self.assertIn("merge conflicts", reminder)
+        pr.add_to_labels.assert_not_called()
+        pr.edit.assert_not_called()
+
+    # Already labeled, inactivity below the threshold : no reminder yet
+    def test_no_reminder_below_threshold(self):
+        """A labeled PR inactive for fewer than REMIND_DAYS weekdays is left alone."""
+        pr = self._make_pr(
+            9,
+            mergeable=False,
+            labels=[NEEDS_REBASE_LABEL],
+            updated_at=datetime.now(UTC) - timedelta(days=3),  # at most 3 weekdays
+        )
+        process_needs_rebase_pr(pr)
+        pr.create_issue_comment.assert_not_called()
+
+    # Reminder without a resolvable author login : no mention, still reminds
+    def test_reminder_without_author_login(self):
+        """If the PR author cannot be resolved, the reminder is posted without a mention."""
+        pr = self._make_pr(
+            10,
+            mergeable=False,
+            labels=[NEEDS_REBASE_LABEL],
+            updated_at=datetime.now(UTC) - timedelta(days=14),
+        )
+        pr.user = None
+        process_needs_rebase_pr(pr)
+        pr.create_issue_comment.assert_called_once()
+        reminder = pr.create_issue_comment.call_args[0][0]
+        self.assertFalse(reminder.startswith("@"))
 
     # Conflicts resolved : label removed
     def test_removes_label_when_conflicts_resolved(self):
