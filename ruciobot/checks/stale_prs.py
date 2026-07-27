@@ -8,6 +8,11 @@ inactivity. That covers a PR that has never been reviewed, one with a pending
 review request, and one where the author has already responded to the last
 review and is waiting for another look. Such PRs are surfaced with a
 ``needs-review`` label so reviewers can pick them up.
+
+PRs labeled ``failing-tests`` or ``needs-rebase`` are skipped: those checks
+run their own warn-and-close escalations and take precedence. Lingering
+``stale`` or ``needs-review`` labels are cleared on the way out so they do
+not outlive the countdown they belonged to.
 """
 
 from datetime import UTC, datetime
@@ -16,6 +21,8 @@ from github.PullRequest import PullRequest
 from github.Repository import Repository
 
 from .base import BaseCheck, count_business_days, exclusion_reason
+from .failing_tests import FAILING_TESTS_LABEL
+from .needs_rebase import NEEDS_REBASE_LABEL
 
 STALE_LABEL = "stale"
 NEEDS_REVIEW_LABEL = "needs-review"
@@ -51,6 +58,23 @@ def process_pr(pr: PullRequest, days_until_stale: int) -> None:
     if reason:
         print(f"  [SKIP] PR #{pr.number} {reason}. Skipping.")
         return
+
+    # Failing-tests and conflicted PRs are owned by their respective checks,
+    # which run their own warn-and-close escalations, so this check's
+    # countdown must not compete with them. Lingering labels from this check
+    # are lifted on the way out so they do not outlive the countdown they
+    # belonged to.
+    for owner_label in (FAILING_TESTS_LABEL, NEEDS_REBASE_LABEL):
+        if _has_label(pr, owner_label):
+            print(
+                f"  [SKIP] PR #{pr.number} has '{owner_label}' label; "
+                "that check runs its own escalation. Skipping."
+            )
+            if _has_label(pr, STALE_LABEL):
+                _clear_label(pr, STALE_LABEL, f"is handled by the {owner_label} check")
+            if _has_label(pr, NEEDS_REVIEW_LABEL):
+                _clear_label(pr, NEEDS_REVIEW_LABEL, f"is handled by the {owner_label} check")
+            return
 
     now = datetime.now(UTC)
     assert pr.updated_at is not None, f"PR #{pr.number} has no updated_at timestamp"

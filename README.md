@@ -12,7 +12,9 @@ Responsible for PR merging in [rucio/ruciobot](https://github.com/rucio/ruciobot
 
 **Failing tests.** A pull request with failing CI checks is warned after one weekday of inactivity. If it remains inactive and labeled for three more weekdays, it is closed.
 
-**Needs rebase.** A pull request that has merge conflicts with its target branch receives a comment asking the author to rebase, and is labeled `needs-rebase`. Once the conflicts are resolved, the label is removed automatically on the next run.
+**Needs rebase.** A pull request that has merge conflicts with its target branch receives a comment asking the author to rebase, and is labeled `needs-rebase`. If the conflicts remain and the PR sees no activity for five weekdays, the author is warned that the PR will be closed; after five further weekdays of inactivity it is closed. Once the conflicts are resolved, the label and the warning are removed automatically on the next run.
+
+When a PR qualifies for more than one check, the most urgent one owns the closure countdown: failing tests take precedence over a needed rebase, and both take precedence over staleness. The needs-rebase check keeps its label for information but pauses its countdown while `failing-tests` is present, and the stale check lifts its labels entirely while a higher-priority check owns the PR.
 
 PRs opened by [Dependabot](https://docs.github.com/en/code-security/dependabot) and PRs labeled `no-bot` are excluded from all checks. More checks will be added over time. To request a new feature or report a bug, please open an issue.
 

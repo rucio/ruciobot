@@ -1,5 +1,9 @@
 """
 Failing-tests check: warn after WARN_DAYS of inactivity, close after CLOSE_DAYS more.
+
+This check takes precedence over the needs-rebase and stale checks: a PR
+with failing tests is escalated here even if it also needs a rebase, since
+red CI is the most urgent signal and often implies a rebase is needed anyway.
 """
 
 from datetime import UTC, datetime

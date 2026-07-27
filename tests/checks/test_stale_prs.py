@@ -20,6 +20,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from ruciobot.checks.base import NO_BOT_LABEL
+from ruciobot.checks.failing_tests import FAILING_TESTS_LABEL
+from ruciobot.checks.needs_rebase import NEEDS_REBASE_LABEL
 from ruciobot.checks.stale_prs import (
     CLOSE_DAYS,
     NEEDS_REVIEW_LABEL,
@@ -269,6 +271,50 @@ class TestStalePRs(unittest.TestCase):
             reviews=[_review("CHANGES_REQUESTED", "bob", OLD_REVIEW)],
         )
         run_check(pr)
+        pr.add_to_labels.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+        pr.get_reviews.assert_not_called()
+
+    def test_skips_needs_rebase_labeled_pr(self):
+        """A conflicted PR is owned by the needs-rebase check and skipped here entirely."""
+        pr = make_pr(
+            updated_at=PAST_STALE,
+            labels=[NEEDS_REBASE_LABEL],
+            reviews=[_review("CHANGES_REQUESTED", "bob", OLD_REVIEW)],
+        )
+        run_check(pr)
+        pr.add_to_labels.assert_not_called()
+        pr.remove_from_labels.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+        pr.get_reviews.assert_not_called()
+
+    def test_skips_failing_tests_labeled_pr(self):
+        """A failing-tests PR is owned by that check; lingering stale labels are lifted."""
+        pr = make_pr(
+            updated_at=PAST_STALE,
+            labels=[FAILING_TESTS_LABEL, STALE_LABEL],
+            reviews=[_review("CHANGES_REQUESTED", "bob", OLD_REVIEW)],
+        )
+        run_check(pr)
+        removed = [c.args[0] for c in pr.remove_from_labels.call_args_list]
+        self.assertEqual(removed, [STALE_LABEL])
+        pr.add_to_labels.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+        pr.get_reviews.assert_not_called()
+
+    def test_needs_rebase_skip_clears_lingering_bot_labels(self):
+        """Skipping a conflicted PR lifts lingering stale/needs-review labels on the way out."""
+        pr = make_pr(
+            updated_at=PAST_STALE,
+            labels=[NEEDS_REBASE_LABEL, STALE_LABEL, NEEDS_REVIEW_LABEL],
+            reviews=[_review("CHANGES_REQUESTED", "bob", OLD_REVIEW)],
+        )
+        run_check(pr)
+        removed = [c.args[0] for c in pr.remove_from_labels.call_args_list]
+        self.assertEqual(sorted(removed), sorted([STALE_LABEL, NEEDS_REVIEW_LABEL]))
         pr.add_to_labels.assert_not_called()
         pr.create_issue_comment.assert_not_called()
         pr.edit.assert_not_called()
