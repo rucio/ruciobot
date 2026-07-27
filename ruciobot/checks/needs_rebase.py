@@ -12,6 +12,7 @@ conflicts are resolved, so a later conflict starts a fresh cycle.
 
 from datetime import UTC, datetime
 
+from github.GithubException import RateLimitExceededException
 from github.PullRequest import PullRequest
 from github.Repository import Repository
 
@@ -128,6 +129,8 @@ def _has_warning_comment(pr: PullRequest) -> bool:
     """
     try:
         return any(WARNING_MARKER in (c.body or "") for c in pr.get_issue_comments())
+    except RateLimitExceededException:
+        raise  # rate limits are owned by BaseCheck: back off, or stop the run
     except Exception as e:
         print(f"  [WARN] Could not fetch comments for PR #{pr.number}: {e}")
         return False
@@ -156,8 +159,12 @@ def _clear_needs_rebase_flag(pr: PullRequest) -> None:
 def _delete_warning_comments(pr: PullRequest) -> None:
     """Delete stale closure warnings so a future conflict starts a fresh cycle."""
     try:
-        for comment in pr.get_issue_comments():
+        # Materialise the list first: deleting while iterating an offset-paginated
+        # list shifts later pages and can silently skip comments.
+        for comment in list(pr.get_issue_comments()):
             if WARNING_MARKER in (comment.body or ""):
                 comment.delete()
+    except RateLimitExceededException:
+        raise  # rate limits are owned by BaseCheck: back off, or stop the run
     except Exception as e:
         print(f"  [WARN] Could not clean up warning comments for PR #{pr.number}: {e}")

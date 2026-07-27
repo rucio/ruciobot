@@ -12,6 +12,8 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+from github.GithubException import RateLimitExceededException
+
 from ruciobot.checks.needs_rebase import (
     NEEDS_REBASE_CLOSE_DAYS,
     NEEDS_REBASE_LABEL,
@@ -183,6 +185,22 @@ class TestNeedsRebaseCheck(unittest.TestCase):
         self._run(pr)
         pr.create_issue_comment.assert_called_once_with(REBASE_WARNING_COMMENT)
         pr.edit.assert_not_called()
+
+    def test_rate_limit_during_comment_scan_propagates(self):
+        """A rate limit raised while scanning comments must reach BaseCheck, not be swallowed."""
+        pr = self._make_pr(14, mergeable=False, labels=[NEEDS_REBASE_LABEL], updated_at=PAST_CLOSE)
+        pr.get_issue_comments.side_effect = RateLimitExceededException(403, {"message": "hit"}, {})
+        with self.assertRaises(RateLimitExceededException):
+            self._run(pr)
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+
+    def test_rate_limit_during_warning_cleanup_propagates(self):
+        """A rate limit raised while deleting warnings must reach BaseCheck, not be swallowed."""
+        pr = self._make_pr(15, mergeable=True, labels=[NEEDS_REBASE_LABEL])
+        pr.get_issue_comments.side_effect = RateLimitExceededException(403, {"message": "hit"}, {})
+        with self.assertRaises(RateLimitExceededException):
+            self._run(pr)
 
     # Resolution cleans up the warning so a future conflict starts fresh
 

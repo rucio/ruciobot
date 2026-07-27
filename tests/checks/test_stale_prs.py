@@ -289,6 +289,21 @@ class TestStalePRs(unittest.TestCase):
         pr.edit.assert_not_called()
         pr.get_reviews.assert_not_called()
 
+    def test_needs_rebase_skip_clears_lingering_bot_labels(self):
+        """Skipping a conflicted PR lifts lingering stale/needs-review labels on the way out."""
+        pr = make_pr(
+            updated_at=PAST_STALE,
+            labels=[NEEDS_REBASE_LABEL, STALE_LABEL, NEEDS_REVIEW_LABEL],
+            reviews=[_review("CHANGES_REQUESTED", "bob", OLD_REVIEW)],
+        )
+        run_check(pr)
+        removed = [c.args[0] for c in pr.remove_from_labels.call_args_list]
+        self.assertEqual(sorted(removed), sorted([STALE_LABEL, NEEDS_REVIEW_LABEL]))
+        pr.add_to_labels.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+        pr.get_reviews.assert_not_called()
+
     def test_active_pr_short_circuits_without_api_calls(self):
         """A recently active, unlabeled PR returns before any review/commit lookups."""
         pr = make_pr(updated_at=RECENT)
