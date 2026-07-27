@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from ruciobot.checks.base import NO_BOT_LABEL
+from ruciobot.checks.needs_rebase import NEEDS_REBASE_LABEL
 from ruciobot.checks.stale_prs import (
     CLOSE_DAYS,
     NEEDS_REVIEW_LABEL,
@@ -270,6 +271,20 @@ class TestStalePRs(unittest.TestCase):
         )
         run_check(pr)
         pr.add_to_labels.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+        pr.get_reviews.assert_not_called()
+
+    def test_skips_needs_rebase_labeled_pr(self):
+        """A conflicted PR is owned by the needs-rebase check and skipped here entirely."""
+        pr = make_pr(
+            updated_at=PAST_STALE,
+            labels=[NEEDS_REBASE_LABEL],
+            reviews=[_review("CHANGES_REQUESTED", "bob", OLD_REVIEW)],
+        )
+        run_check(pr)
+        pr.add_to_labels.assert_not_called()
+        pr.remove_from_labels.assert_not_called()
         pr.create_issue_comment.assert_not_called()
         pr.edit.assert_not_called()
         pr.get_reviews.assert_not_called()

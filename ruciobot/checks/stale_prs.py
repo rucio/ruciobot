@@ -8,6 +8,9 @@ inactivity. That covers a PR that has never been reviewed, one with a pending
 review request, and one where the author has already responded to the last
 review and is waiting for another look. Such PRs are surfaced with a
 ``needs-review`` label so reviewers can pick them up.
+
+PRs labeled ``needs-rebase`` are skipped entirely: the needs-rebase check
+runs its own warn-and-close escalation for unresolved merge conflicts.
 """
 
 from datetime import UTC, datetime
@@ -16,6 +19,7 @@ from github.PullRequest import PullRequest
 from github.Repository import Repository
 
 from .base import BaseCheck, count_business_days, exclusion_reason
+from .needs_rebase import NEEDS_REBASE_LABEL
 
 STALE_LABEL = "stale"
 NEEDS_REVIEW_LABEL = "needs-review"
@@ -50,6 +54,16 @@ def process_pr(pr: PullRequest, days_until_stale: int) -> None:
     reason = exclusion_reason(pr)
     if reason:
         print(f"  [SKIP] PR #{pr.number} {reason}. Skipping.")
+        return
+
+    # Conflicted PRs are owned by the needs-rebase check, which runs its own
+    # warn-and-close escalation. Skipping them here ensures an author never
+    # faces two competing closure countdowns.
+    if _has_label(pr, NEEDS_REBASE_LABEL):
+        print(
+            f"  [SKIP] PR #{pr.number} has '{NEEDS_REBASE_LABEL}' label; "
+            "the needs-rebase check handles it. Skipping."
+        )
         return
 
     now = datetime.now(UTC)
