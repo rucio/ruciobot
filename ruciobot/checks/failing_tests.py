@@ -11,11 +11,23 @@ from datetime import UTC, datetime
 from github.PullRequest import PullRequest
 from github.Repository import Repository
 
-from .base import BaseCheck, count_business_days, exclusion_reason
+from .base import (
+    BaseCheck,
+    count_business_days,
+    delete_bot_comments,
+    exclusion_reason,
+    latest_bot_comment,
+    post_bot_comment,
+)
 
 FAILING_TESTS_LABEL = "failing-tests"
 FAILING_TESTS_WARN_DAYS = 1  # Days of inactivity before warning
 FAILING_TESTS_CLOSE_DAYS = 3  # Days of inactivity (after warning) before closing
+
+# Comment kinds; the shared prefix scopes cleanup to this check's comments.
+KIND_PREFIX = "failing-tests-"
+KIND_WARNING = "failing-tests-warning"
+KIND_CLOSE = "failing-tests-close"
 
 
 class FailingTestsCheck(BaseCheck):
@@ -72,6 +84,8 @@ def _clear_failing_tests_label(pr: PullRequest) -> None:
         f"  [INFO] PR #{pr.number} tests are now passing. Removing '{FAILING_TESTS_LABEL}' label."
     )
     pr.remove_from_labels(FAILING_TESTS_LABEL)
+    # Only this check's comments: another check's active comment must survive.
+    delete_bot_comments(pr, KIND_PREFIX)
 
 
 def _warn_failing_test_pr(pr: PullRequest) -> None:
@@ -79,12 +93,14 @@ def _warn_failing_test_pr(pr: PullRequest) -> None:
         f"  [WARN] PR #{pr.number} has failing tests and has been "
         f"inactive for {FAILING_TESTS_WARN_DAYS}+ weekday(s)."
     )
-    pr.create_issue_comment(
+    post_bot_comment(
+        pr,
+        KIND_WARNING,
         f"This PR has failing CI checks and has had no activity for "
         f"{FAILING_TESTS_WARN_DAYS} weekday(s). "
         f"It has been labeled **failing-tests** and will be closed in "
         f"{FAILING_TESTS_CLOSE_DAYS} weekdays unless the tests are fixed "
-        f"or new activity is recorded."
+        f"or new activity is recorded.",
     )
     pr.add_to_labels(FAILING_TESTS_LABEL)
 
@@ -93,12 +109,18 @@ def _close_failing_test_pr(pr: PullRequest) -> None:
     print(
         f"  [CLOSE] PR #{pr.number} has had failing tests and been inactive for too long. Closing."
     )
-    pr.create_issue_comment(
+    kind, comment = latest_bot_comment(pr)
+    warned_on = comment.created_at if kind == KIND_WARNING and comment is not None else None
+    recap = f"A closure warning was issued on {warned_on:%Y-%m-%d}. " if warned_on else ""
+    post_bot_comment(
+        pr,
+        KIND_CLOSE,
         f"Closing this PR because it has had failing CI checks for more than "
         f"{FAILING_TESTS_CLOSE_DAYS} weekdays with no activity. "
+        f"{recap}"
         "Feel free to reopen it once the tests are fixed. "
         "If you believe this action was a mistake, please reach out to a member of the "
         "[Rucio review team](https://rucio.github.io/documentation/component_leads) "
-        "with an explanation."
+        "with an explanation.",
     )
     pr.edit(state="closed")
