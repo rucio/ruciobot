@@ -14,6 +14,7 @@ failing-tests check, which takes precedence: the escalation pauses while
 that label is present, though flagging and label clearing still run.
 """
 
+import time
 from datetime import UTC, datetime
 
 from github.GithubException import RateLimitExceededException
@@ -26,6 +27,14 @@ from .failing_tests import FAILING_TESTS_LABEL
 NEEDS_REBASE_LABEL = "needs-rebase"
 NEEDS_REBASE_WARN_DAYS = 5  # Weekdays of inactivity before the closure warning.
 NEEDS_REBASE_CLOSE_DAYS = 5  # Weekdays of inactivity (after warning) before closing.
+
+# GitHub computes mergeability lazily: every push to the base branch drops the
+# cached value, and the next API read returns None while a background job
+# recomputes it. Reading ``mergeable`` is what triggers that job, and it
+# usually finishes within seconds, so poll briefly instead of skipping the PR
+# for a whole run.
+MERGEABLE_POLL_ATTEMPTS = 3
+MERGEABLE_POLL_SECONDS = 5
 
 # Hidden marker embedded in the warning comment; its presence on a PR is how
 # the bot remembers that the closure warning has already been issued.
@@ -75,10 +84,10 @@ def process_needs_rebase_pr(pr: PullRequest) -> None:
         print(f"  [SKIP] PR #{pr.number} {reason}. Skipping.")
         return
 
-    mergeable = pr.mergeable  # None = GitHub hasn't computed it yet; False = conflicts
+    mergeable = _resolve_mergeable(pr)  # None = GitHub couldn't compute it; False = conflicts
 
     if mergeable is None:
-        # GitHub hasn't determined mergeability yet — skip for now; next run will catch it.
+        # Still undetermined after polling — skip for now; next run will catch it.
         print(f"  [SKIP] PR #{pr.number} mergeability not yet determined. Skipping.")
         return
 
@@ -93,6 +102,24 @@ def process_needs_rebase_pr(pr: PullRequest) -> None:
         # Conflicts were resolved — remove the label and warning if still present.
         if already_labeled:
             _clear_needs_rebase_flag(pr)
+
+
+def _resolve_mergeable(pr: PullRequest) -> bool | None:
+    """Return the PR's mergeability, polling briefly while GitHub computes it.
+
+    The first read of ``mergeable`` kicks off GitHub's asynchronous
+    computation; re-fetch the PR a few times before giving up so quiet-hours
+    runs do not skip every PR whose cached value was invalidated by a recent
+    push to the base branch.
+    """
+    mergeable = pr.mergeable
+    for _ in range(MERGEABLE_POLL_ATTEMPTS):
+        if mergeable is not None:
+            return mergeable
+        time.sleep(MERGEABLE_POLL_SECONDS)
+        pr.update()
+        mergeable = pr.mergeable
+    return mergeable
 
 
 def _is_labeled_needs_rebase(pr: PullRequest) -> bool:
