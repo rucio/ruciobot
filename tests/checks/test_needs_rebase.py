@@ -16,6 +16,7 @@ from github.GithubException import RateLimitExceededException
 
 from ruciobot.checks.failing_tests import FAILING_TESTS_LABEL
 from ruciobot.checks.needs_rebase import (
+    MERGEABLE_POLL_ATTEMPTS,
     NEEDS_REBASE_CLOSE_DAYS,
     NEEDS_REBASE_LABEL,
     NEEDS_REBASE_WARN_DAYS,
@@ -78,7 +79,10 @@ class TestNeedsRebaseCheck(unittest.TestCase):
         return pr
 
     def _run(self, pr, now: datetime = NOW):
-        with patch("ruciobot.checks.needs_rebase.datetime") as mock_dt:
+        with (
+            patch("ruciobot.checks.needs_rebase.datetime") as mock_dt,
+            patch("ruciobot.checks.needs_rebase.time.sleep"),
+        ):
             mock_dt.now.return_value = now
             process_needs_rebase_pr(pr)
 
@@ -115,13 +119,27 @@ class TestNeedsRebaseCheck(unittest.TestCase):
         pr.add_to_labels.assert_not_called()
         pr.remove_from_labels.assert_not_called()
 
-    # GitHub hasn't determined mergeability yet : skip
-    def test_skips_when_mergeability_unknown(self):
-        """PR whose mergeability is None (not yet computed) should be skipped entirely."""
+    # GitHub hasn't determined mergeability yet : poll, then skip
+    def test_skips_when_mergeability_stays_unknown(self):
+        """A PR whose mergeability never resolves is polled, then skipped entirely."""
         pr = self._make_pr(5, mergeable=None)
         self._run(pr)
+        self.assertEqual(pr.update.call_count, MERGEABLE_POLL_ATTEMPTS)
         pr.create_issue_comment.assert_not_called()
         pr.add_to_labels.assert_not_called()
+
+    def test_polls_until_mergeability_resolves(self):
+        """A PR whose mergeability resolves to conflicting during polling is flagged."""
+        pr = self._make_pr(18, mergeable=None)
+
+        def resolve():
+            pr.mergeable = False
+
+        pr.update.side_effect = resolve
+        self._run(pr)
+        self.assertEqual(pr.update.call_count, 1)
+        pr.create_issue_comment.assert_called_once_with(REBASE_COMMENT)
+        pr.add_to_labels.assert_called_once_with(NEEDS_REBASE_LABEL)
 
     # no-bot label : skipped regardless of merge state
     def test_skips_no_bot_pr(self):
