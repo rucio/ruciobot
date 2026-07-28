@@ -20,12 +20,24 @@ from datetime import UTC, datetime
 from github.PullRequest import PullRequest
 from github.Repository import Repository
 
-from .base import BaseCheck, count_business_days, exclusion_reason
+from .base import (
+    BaseCheck,
+    count_business_days,
+    delete_bot_comments,
+    exclusion_reason,
+    latest_bot_comment,
+    post_bot_comment,
+)
 from .failing_tests import FAILING_TESTS_LABEL
 from .needs_rebase import NEEDS_REBASE_LABEL
 
 STALE_LABEL = "stale"
 NEEDS_REVIEW_LABEL = "needs-review"
+
+# Comment kinds; the shared prefix scopes cleanup to this check's comments.
+KIND_PREFIX = "stale-"
+KIND_WARNING = "stale-warning"
+KIND_CLOSE = "stale-close"
 WARN_DAYS = 14
 CLOSE_DAYS = 7  # Weekdays after the stale warning before the PR is closed.
 
@@ -71,7 +83,7 @@ def process_pr(pr: PullRequest, days_until_stale: int) -> None:
                 "that check runs its own escalation. Skipping."
             )
             if _has_label(pr, STALE_LABEL):
-                _clear_label(pr, STALE_LABEL, f"is handled by the {owner_label} check")
+                _clear_stale_label(pr, f"is handled by the {owner_label} check")
             if _has_label(pr, NEEDS_REVIEW_LABEL):
                 _clear_label(pr, NEEDS_REVIEW_LABEL, f"is handled by the {owner_label} check")
             return
@@ -95,7 +107,7 @@ def process_pr(pr: PullRequest, days_until_stale: int) -> None:
     if court != AUTHOR_BLOCKED:
         # Not the author's turn, so this PR is never closed for staleness.
         if labeled_stale:
-            _clear_label(pr, STALE_LABEL, "has new activity or is awaiting review")
+            _clear_stale_label(pr, "has new activity or is awaiting review")
         if court == AWAITING_REVIEW:
             if inactive_days >= days_until_stale and not labeled_needs_review:
                 _flag_awaiting_review(pr, inactive_days)
@@ -175,21 +187,29 @@ def _flag_awaiting_review(pr: PullRequest, inactive_days: int) -> None:
 
 def _mark_pr_stale(pr: PullRequest, days: int) -> None:
     print(f"  [WARN] PR #{pr.number} is inactive for {days}+ weekdays. Marking stale.")
-    pr.create_issue_comment(
+    post_bot_comment(
+        pr,
+        KIND_WARNING,
         f"This PR has had no activity for {days} weekdays and is waiting on its author. "
         f"It has been marked as **stale** and will be closed in {CLOSE_DAYS} weekdays "
-        "unless there is new activity."
+        "unless there is new activity.",
     )
     pr.add_to_labels(STALE_LABEL)
 
 
 def _close_stale_pr(pr: PullRequest) -> None:
     print(f"  [CLOSE] PR #{pr.number} has been stale for too long. Closing.")
-    pr.create_issue_comment(
+    kind, comment = latest_bot_comment(pr)
+    warned_on = comment.created_at if kind == KIND_WARNING and comment is not None else None
+    recap = f"A stale warning was issued on {warned_on:%Y-%m-%d}. " if warned_on else ""
+    post_bot_comment(
+        pr,
+        KIND_CLOSE,
         "Closing this PR due to prolonged inactivity. "
+        f"{recap}"
         "Feel free to reopen it if you would like to continue working on it. "
         "If you believe this action was a mistake, please reach out to a member of the "
-        f"[Rucio review team]({COMPONENT_LEADS}) with an explanation."
+        f"[Rucio review team]({COMPONENT_LEADS}) with an explanation.",
     )
     pr.edit(state="closed")
 
@@ -204,6 +224,13 @@ def _has_label(pr: PullRequest, label: str) -> bool:
 def _clear_label(pr: PullRequest, label: str, reason: str) -> None:
     print(f"  [INFO] PR #{pr.number} {reason}. Removing '{label}' label.")
     pr.remove_from_labels(label)
+
+
+def _clear_stale_label(pr: PullRequest, reason: str) -> None:
+    """Lift the stale label and the warning comment that came with it."""
+    _clear_label(pr, STALE_LABEL, reason)
+    # Only this check's comments: another check's active comment must survive.
+    delete_bot_comments(pr, KIND_PREFIX)
 
 
 def _has_pending_review_request(pr: PullRequest) -> bool:

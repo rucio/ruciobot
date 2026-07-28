@@ -19,16 +19,19 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from ruciobot.checks.base import NO_BOT_LABEL
+from ruciobot.checks.base import NO_BOT_LABEL, bot_marker, set_bot_login
 from ruciobot.checks.failing_tests import FAILING_TESTS_LABEL
 from ruciobot.checks.needs_rebase import NEEDS_REBASE_LABEL
 from ruciobot.checks.stale_prs import (
     CLOSE_DAYS,
+    KIND_WARNING,
     NEEDS_REVIEW_LABEL,
     STALE_LABEL,
     WARN_DAYS,
     process_pr,
 )
+
+BOT_LOGIN = "ruciobot[bot]"
 
 # Pinned "now": a Monday at noon UTC.
 NOW = datetime(2026, 3, 9, 12, 0, tzinfo=UTC)
@@ -51,6 +54,15 @@ PAST_CLOSE = business_days_before(CLOSE_DAYS + 1)  # past the close threshold (8
 PAST_STALE = business_days_before(WARN_DAYS + 1)  # past the stale threshold (15 bd)
 OLD_REVIEW = business_days_before(20)
 OLD_COMMIT = business_days_before(40)
+
+
+def _bot_comment(kind, created_at=NOW, login=BOT_LOGIN):
+    comment = MagicMock()
+    comment.body = f"{bot_marker(kind)}\nsome text"
+    comment.user = MagicMock()
+    comment.user.login = login
+    comment.created_at = created_at
+    return comment
 
 
 # Mock builders
@@ -114,6 +126,12 @@ def run_check(pr, now=NOW):
 
 
 class TestStalePRs(unittest.TestCase):
+    def setUp(self):
+        set_bot_login(BOT_LOGIN)
+
+    def tearDown(self):
+        set_bot_login(None)
+
     # Author-blocked: the only state that is staled and closed.
 
     def test_marks_author_blocked_pr_stale(self):
@@ -139,6 +157,22 @@ class TestStalePRs(unittest.TestCase):
         run_check(pr)
         pr.edit.assert_called_once_with(state="closed")
         pr.create_issue_comment.assert_called_once()
+
+    def test_close_recaps_warning_and_replaces_it(self):
+        """The closing comment recaps the stale warning date and replaces that comment."""
+        warning = _bot_comment(KIND_WARNING, created_at=PAST_CLOSE)
+        pr = make_pr(
+            updated_at=PAST_CLOSE,
+            labels=[STALE_LABEL],
+            reviews=[_review("CHANGES_REQUESTED", "bob", OLD_REVIEW)],
+            commits=[_commit(OLD_COMMIT)],
+            comments=[warning],
+        )
+        run_check(pr)
+        pr.edit.assert_called_once_with(state="closed")
+        posted = pr.create_issue_comment.call_args[0][0]
+        self.assertIn(f"A stale warning was issued on {PAST_CLOSE:%Y-%m-%d}.", posted)
+        warning.delete.assert_called_once()
 
     def test_does_not_close_author_blocked_pr_before_threshold(self):
         """A stale-labeled author-blocked PR not yet past CLOSE_DAYS is left open."""
@@ -319,6 +353,21 @@ class TestStalePRs(unittest.TestCase):
         pr.create_issue_comment.assert_not_called()
         pr.edit.assert_not_called()
         pr.get_reviews.assert_not_called()
+
+    def test_handover_deletes_stale_comment(self):
+        """Handing a PR to the needs-rebase check also lifts the stale warning comment."""
+        warning = _bot_comment(KIND_WARNING)
+        pr = make_pr(
+            updated_at=PAST_STALE,
+            labels=[NEEDS_REBASE_LABEL, STALE_LABEL],
+            comments=[warning],
+        )
+        run_check(pr)
+        removed = [c.args[0] for c in pr.remove_from_labels.call_args_list]
+        self.assertEqual(removed, [STALE_LABEL])
+        warning.delete.assert_called_once()
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
 
     def test_active_pr_short_circuits_without_api_calls(self):
         """A recently active, unlabeled PR returns before any review/commit lookups."""

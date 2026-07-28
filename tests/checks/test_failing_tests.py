@@ -19,12 +19,16 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+from ruciobot.checks.base import bot_marker, set_bot_login
 from ruciobot.checks.failing_tests import (
     FAILING_TESTS_CLOSE_DAYS,
     FAILING_TESTS_LABEL,
     FAILING_TESTS_WARN_DAYS,
+    KIND_WARNING,
     process_failing_test_pr,
 )
+
+BOT_LOGIN = "ruciobot[bot]"
 
 # Pinned "now" — a Monday at noon UTC.
 NOW = datetime(2026, 3, 9, 12, 0, tzinfo=UTC)
@@ -50,15 +54,31 @@ ACTIVE_DATE = (
 )  # < warn threshold (use NOW when WARN=1)
 
 
+def _bot_comment(kind, created_at=NOW, login=BOT_LOGIN):
+    comment = MagicMock()
+    comment.body = f"{bot_marker(kind)}\nsome text"
+    comment.user = MagicMock()
+    comment.user.login = login
+    comment.created_at = created_at
+    return comment
+
+
 class TestFailingTestPRs(unittest.TestCase):
+    def setUp(self):
+        set_bot_login(BOT_LOGIN)
+
+    def tearDown(self):
+        set_bot_login(None)
+
     def _mock_now(self, mock_dt):
         mock_dt.now.return_value = NOW
 
-    def create_mock_pr(self, number, updated_at, labels=[]):
+    def create_mock_pr(self, number, updated_at, labels=[], comments=None):
         pr = MagicMock()
         pr.number = number
         pr.title = f"PR {number}"
         pr.updated_at = updated_at
+        pr.get_issue_comments.return_value = list(comments or [])
         label_mocks = []
         for lbl in labels:
             m = MagicMock()
@@ -110,6 +130,35 @@ class TestFailingTestPRs(unittest.TestCase):
         pr.remove_from_labels.assert_called_once_with(FAILING_TESTS_LABEL)
         pr.edit.assert_not_called()
         pr.create_issue_comment.assert_not_called()
+
+    def test_recovery_deletes_own_comment_only(self):
+        """When tests turn green, the check's own comment is removed; others survive."""
+        warning = _bot_comment(KIND_WARNING)
+        foreign = _bot_comment(KIND_WARNING, login="alice")  # quote-reply lookalike
+        pr = self.create_mock_pr(
+            1, updated_at=ACTIVE_DATE, labels=[FAILING_TESTS_LABEL], comments=[warning, foreign]
+        )
+        repo = self.create_mock_repo(["success"])
+        with patch("ruciobot.checks.failing_tests.datetime") as mock_dt:
+            self._mock_now(mock_dt)
+            process_failing_test_pr(pr, repo)
+        warning.delete.assert_called_once()
+        foreign.delete.assert_not_called()
+
+    def test_close_recaps_warning_and_replaces_it(self):
+        """The closing comment recaps the warning date and replaces the warning comment."""
+        warning = _bot_comment(KIND_WARNING, created_at=CLOSE_DATE)
+        pr = self.create_mock_pr(
+            1, updated_at=CLOSE_DATE, labels=[FAILING_TESTS_LABEL], comments=[warning]
+        )
+        repo = self.create_mock_repo(["failure"])
+        with patch("ruciobot.checks.failing_tests.datetime") as mock_dt:
+            self._mock_now(mock_dt)
+            process_failing_test_pr(pr, repo)
+        pr.edit.assert_called_with(state="closed")
+        posted = pr.create_issue_comment.call_args[0][0]
+        self.assertIn(f"A closure warning was issued on {CLOSE_DATE:%Y-%m-%d}.", posted)
+        warning.delete.assert_called_once()
 
     def test_ignores_recently_active_failing_pr(self):
         """PR with failing checks but 0 business days elapsed should not be warned or closed."""

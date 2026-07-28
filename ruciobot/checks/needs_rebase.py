@@ -5,9 +5,9 @@ A conflicted PR is flagged immediately with a comment and the ``needs-rebase``
 label. If the conflicts remain and the PR sees no activity for
 ``NEEDS_REBASE_WARN_DAYS`` weekdays, the author is warned that the PR will be
 closed; after ``NEEDS_REBASE_CLOSE_DAYS`` further weekdays of inactivity it is
-closed. Whether the warning was already issued is tracked through a hidden
-marker in the warning comment itself; the warning is deleted once the
-conflicts are resolved, so a later conflict starts a fresh cycle.
+closed. Whether the warning was already issued is tracked through the kind
+marker of the bot's single comment; the comment is removed once the conflicts
+are resolved, so a later conflict starts a fresh cycle.
 
 A PR that also carries the ``failing-tests`` label is left to the
 failing-tests check, which takes precedence: the escalation pauses while
@@ -17,11 +17,17 @@ that label is present, though flagging and label clearing still run.
 import time
 from datetime import UTC, datetime
 
-from github.GithubException import RateLimitExceededException
 from github.PullRequest import PullRequest
 from github.Repository import Repository
 
-from .base import BaseCheck, count_business_days, exclusion_reason
+from .base import (
+    BaseCheck,
+    count_business_days,
+    delete_bot_comments,
+    exclusion_reason,
+    latest_bot_comment,
+    post_bot_comment,
+)
 from .failing_tests import FAILING_TESTS_LABEL
 
 NEEDS_REBASE_LABEL = "needs-rebase"
@@ -36,9 +42,11 @@ NEEDS_REBASE_CLOSE_DAYS = 5  # Weekdays of inactivity (after warning) before clo
 MERGEABLE_POLL_ATTEMPTS = 3
 MERGEABLE_POLL_SECONDS = 5
 
-# Hidden marker embedded in the warning comment; its presence on a PR is how
-# the bot remembers that the closure warning has already been issued.
-WARNING_MARKER = "<!-- ruciobot:needs-rebase-warning -->"
+# Comment kinds; the shared prefix scopes cleanup to this check's comments.
+KIND_PREFIX = "needs-rebase-"
+KIND_FLAG = "needs-rebase-flag"
+KIND_WARNING = "needs-rebase-warning"
+KIND_CLOSE = "needs-rebase-close"
 
 REBASE_COMMENT = (
     "This PR currently has merge conflicts with the target branch. "
@@ -48,21 +56,25 @@ REBASE_COMMENT = (
 )
 
 REBASE_WARNING_COMMENT = (
-    f"{WARNING_MARKER}\n"
     "This PR still has merge conflicts with the target branch and has had no "
     f"activity for {NEEDS_REBASE_WARN_DAYS} weekdays. It will be closed in "
     f"{NEEDS_REBASE_CLOSE_DAYS} weekdays unless the conflicts are resolved or "
     "new activity is recorded."
 )
 
-REBASE_CLOSE_COMMENT = (
-    "Closing this PR because its merge conflicts have remained unresolved, with "
-    f"no activity, for {NEEDS_REBASE_CLOSE_DAYS} weekdays after the warning. "
-    "Feel free to reopen it once the conflicts are resolved. "
-    "If you believe this action was a mistake, please reach out to a member of the "
-    "[Rucio review team](https://rucio.github.io/documentation/component_leads) "
-    "with an explanation."
-)
+
+def rebase_close_comment(warned_on: datetime | None) -> str:
+    """The closing comment, with a one-line recap of the replaced warning."""
+    recap = f"A closure warning was issued on {warned_on:%Y-%m-%d}. " if warned_on else ""
+    return (
+        "Closing this PR because its merge conflicts have remained unresolved, with "
+        f"no activity, for {NEEDS_REBASE_CLOSE_DAYS} weekdays after the warning. "
+        f"{recap}"
+        "Feel free to reopen it once the conflicts are resolved. "
+        "If you believe this action was a mistake, please reach out to a member of the "
+        "[Rucio review team](https://rucio.github.io/documentation/component_leads) "
+        "with an explanation."
+    )
 
 
 class NeedsRebaseCheck(BaseCheck):
@@ -99,7 +111,7 @@ def process_needs_rebase_pr(pr: PullRequest) -> None:
         else:
             _escalate_inactive_pr(pr)
     else:
-        # Conflicts were resolved — remove the label and warning if still present.
+        # Conflicts were resolved — remove the label and comment if still present.
         if already_labeled:
             _clear_needs_rebase_flag(pr)
 
@@ -128,7 +140,7 @@ def _is_labeled_needs_rebase(pr: PullRequest) -> bool:
 
 def _flag_pr_needs_rebase(pr: PullRequest) -> None:
     print(f"  [WARN] PR #{pr.number} has merge conflicts. Commenting and labeling.")
-    pr.create_issue_comment(REBASE_COMMENT)
+    post_bot_comment(pr, KIND_FLAG, REBASE_COMMENT)
     pr.add_to_labels(NEEDS_REBASE_LABEL)
 
 
@@ -153,26 +165,12 @@ def _escalate_inactive_pr(pr: PullRequest) -> None:
         print(f"  [INFO] PR #{pr.number} already labeled '{NEEDS_REBASE_LABEL}'. Skipping.")
         return
 
-    if not _has_warning_comment(pr):
+    kind, comment = latest_bot_comment(pr)
+    if kind != KIND_WARNING:
         if inactive_days >= NEEDS_REBASE_WARN_DAYS:
             _warn_pr(pr, inactive_days)
     elif inactive_days >= NEEDS_REBASE_CLOSE_DAYS:
-        _close_pr(pr)
-
-
-def _has_warning_comment(pr: PullRequest) -> bool:
-    """True if the closure warning has already been posted on this PR.
-
-    Defaults to ``False`` when the comments cannot be fetched: the harmless
-    failure mode is a repeated warning, never an unannounced close.
-    """
-    try:
-        return any(WARNING_MARKER in (c.body or "") for c in pr.get_issue_comments())
-    except RateLimitExceededException:
-        raise  # rate limits are owned by BaseCheck: back off, or stop the run
-    except Exception as e:
-        print(f"  [WARN] Could not fetch comments for PR #{pr.number}: {e}")
-        return False
+        _close_pr(pr, comment.created_at if comment is not None else None)
 
 
 def _warn_pr(pr: PullRequest, inactive_days: int) -> None:
@@ -180,30 +178,17 @@ def _warn_pr(pr: PullRequest, inactive_days: int) -> None:
         f"  [WARN] PR #{pr.number} still has merge conflicts after "
         f"{inactive_days} weekdays of inactivity. Warning the author."
     )
-    pr.create_issue_comment(REBASE_WARNING_COMMENT)
+    post_bot_comment(pr, KIND_WARNING, REBASE_WARNING_COMMENT)
 
 
-def _close_pr(pr: PullRequest) -> None:
+def _close_pr(pr: PullRequest, warned_on: datetime | None) -> None:
     print(f"  [CLOSE] PR #{pr.number} has had unresolved merge conflicts for too long. Closing.")
-    pr.create_issue_comment(REBASE_CLOSE_COMMENT)
+    post_bot_comment(pr, KIND_CLOSE, rebase_close_comment(warned_on))
     pr.edit(state="closed")
 
 
 def _clear_needs_rebase_flag(pr: PullRequest) -> None:
     print(f"  [INFO] PR #{pr.number} conflicts resolved. Removing '{NEEDS_REBASE_LABEL}' label.")
     pr.remove_from_labels(NEEDS_REBASE_LABEL)
-    _delete_warning_comments(pr)
-
-
-def _delete_warning_comments(pr: PullRequest) -> None:
-    """Delete stale closure warnings so a future conflict starts a fresh cycle."""
-    try:
-        # Materialise the list first: deleting while iterating an offset-paginated
-        # list shifts later pages and can silently skip comments.
-        for comment in list(pr.get_issue_comments()):
-            if WARNING_MARKER in (comment.body or ""):
-                comment.delete()
-    except RateLimitExceededException:
-        raise  # rate limits are owned by BaseCheck: back off, or stop the run
-    except Exception as e:
-        print(f"  [WARN] Could not clean up warning comments for PR #{pr.number}: {e}")
+    # Only this check's comments: another check's active comment must survive.
+    delete_bot_comments(pr, KIND_PREFIX)

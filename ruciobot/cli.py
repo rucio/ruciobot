@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 from .auth import get_github_client
 from .checks import CHECKS
+from .checks.base import set_bot_login
 
 # Load .env if present
 load_dotenv()
@@ -44,12 +45,16 @@ def main():
             private_key = f.read()
 
     try:
-        gh = get_github_client(
+        gh, bot_login = get_github_client(
             app_id=args.app_id, private_key=private_key, token=args.token, repo_name=args.repo
         )
     except Exception as e:
         print(f"Authentication Error: {e}")
         sys.exit(1)
+
+    # The bot must know its own login to recognise (and only ever delete)
+    # its own comments; without it, comment cleanup is disabled.
+    set_bot_login(bot_login)
 
     CHECKS[args.action].run(gh, args.repo)
 

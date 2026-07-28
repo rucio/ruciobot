@@ -16,6 +16,8 @@ Responsible for PR merging in [rucio/ruciobot](https://github.com/rucio/ruciobot
 
 When a PR qualifies for more than one check, the most urgent one owns the closure countdown: failing tests take precedence over a needed rebase, and both take precedence over staleness. The needs-rebase check keeps its label for information but pauses its countdown while `failing-tests` is present, and the stale check lifts its labels entirely while a higher-priority check owns the PR.
 
+The bot keeps at most one comment per pull request, so it does not dilute the discussion history: each new bot comment replaces the previous one, and closure comments carry a one-line recap of when the warning was issued. When a PR returns to a healthy state, the check's comment is removed entirely. The bot identifies its comments through a hidden marker combined with its own account login, and never deletes comments written by anyone else.
+
 PRs opened by [Dependabot](https://docs.github.com/en/code-security/dependabot) and PRs labeled `no-bot` are excluded from all checks. More checks will be added over time. To request a new feature or report a bug, please open an issue.
 
 ## Running the bot

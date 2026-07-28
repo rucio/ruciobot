@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from github import Github
 from github.GithubException import GithubException, RateLimitExceededException
+from github.IssueComment import IssueComment
 from github.PullRequest import PullRequest
 from github.Repository import Repository
 
@@ -181,3 +182,115 @@ def _get_header(headers: dict | None, name: str) -> str | None:
         if key.lower() == target:
             return value
     return None
+
+
+# Bot comment management.
+#
+# The bot keeps at most one comment per PR: every comment it posts carries a
+# hidden kind marker, and posting a new comment first deletes the previous
+# one. The kind of the current comment doubles as the bot's persistent state
+# (e.g. "a closure warning has been issued").
+
+BOT_MARKER_PREFIX = "<!-- ruciobot:"
+BOT_MARKER_SUFFIX = " -->"
+
+# Login of the account the bot is authenticated as. Deleting a comment
+# requires certainty that it is the bot's own, so cleanup stays disabled
+# until the login is known.
+_bot_login: str | None = None
+
+
+def set_bot_login(login: str | None) -> None:
+    """Record the login of the account the bot runs as."""
+    global _bot_login
+    _bot_login = login
+
+
+def get_bot_login() -> str | None:
+    return _bot_login
+
+
+def bot_marker(kind: str) -> str:
+    """The hidden marker identifying a bot comment of the given kind."""
+    return f"{BOT_MARKER_PREFIX}{kind}{BOT_MARKER_SUFFIX}"
+
+
+def bot_comment_kind(body: str | None) -> str | None:
+    """Extract the marker kind from a comment body, or ``None``."""
+    if not body:
+        return None
+    start = body.find(BOT_MARKER_PREFIX)
+    if start == -1:
+        return None
+    end = body.find(BOT_MARKER_SUFFIX, start)
+    if end == -1:
+        return None
+    return body[start + len(BOT_MARKER_PREFIX) : end].strip() or None
+
+
+def is_own_comment(comment: IssueComment) -> bool:
+    """True only for marked comments authored by the bot's own account.
+
+    Quote-replies copy the raw markdown, marker included, so the marker alone
+    must never be trusted: the author has to match too. Without a known bot
+    login no comment is considered the bot's own.
+    """
+    login = get_bot_login()
+    if login is None:
+        return False
+    author = getattr(getattr(comment, "user", None), "login", None)
+    return author == login and bot_comment_kind(comment.body) is not None
+
+
+def latest_bot_comment(pr: PullRequest) -> tuple[str | None, IssueComment | None]:
+    """Return ``(kind, comment)`` of the bot's newest comment on *pr*.
+
+    Returns ``(None, None)`` when the bot has no comment or the comments
+    cannot be fetched: the harmless failure mode is a repeated warning,
+    never an unannounced close. Rate limits propagate to the run loop.
+    """
+    try:
+        own = [c for c in pr.get_issue_comments() if is_own_comment(c)]
+    except RateLimitExceededException:
+        raise  # rate limits are owned by BaseCheck: back off, or stop the run
+    except Exception as e:
+        print(f"  [WARN] Could not fetch comments for PR #{pr.number}: {e}")
+        return None, None
+    if not own:
+        return None, None
+    newest = own[-1]  # comments are listed oldest first
+    return bot_comment_kind(newest.body), newest
+
+
+def post_bot_comment(pr: PullRequest, kind: str, body: str) -> None:
+    """Post a marked bot comment, replacing any previous bot comment.
+
+    Deleting first keeps the PR at a single bot comment, always the newest,
+    so the bot does not dilute the discussion history.
+    """
+    delete_bot_comments(pr)
+    pr.create_issue_comment(f"{bot_marker(kind)}\n{body}")
+
+
+def delete_bot_comments(pr: PullRequest, kind_prefix: str = "") -> None:
+    """Delete the bot's own comments, optionally only kinds with *kind_prefix*.
+
+    Only comments that both carry the bot marker and were authored by the
+    bot's own account are ever deleted; everyone else's comments are safe.
+    """
+    if get_bot_login() is None:
+        print(f"  [WARN] Bot login unknown; not cleaning up comments on PR #{pr.number}.")
+        return
+    try:
+        # Materialise the list first: deleting while iterating an
+        # offset-paginated list shifts later pages and silently skips items.
+        for comment in list(pr.get_issue_comments()):
+            if not is_own_comment(comment):
+                continue
+            kind = bot_comment_kind(comment.body)
+            if kind is not None and kind.startswith(kind_prefix):
+                comment.delete()
+    except RateLimitExceededException:
+        raise  # rate limits are owned by BaseCheck: back off, or stop the run
+    except Exception as e:
+        print(f"  [WARN] Could not clean up bot comments on PR #{pr.number}: {e}")
