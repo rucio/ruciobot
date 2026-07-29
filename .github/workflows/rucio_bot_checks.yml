@@ -2,7 +2,10 @@ name: RucioBot Maintenance Checks
 
 on:
   schedule:
-    - cron: '0 1,13 * * *'  # Run twice daily at 1 AM and 1 PM UTC
+    # Three runs daily (roughly 03:30, 09:30, and 15:30 CEST in practice).
+    # The off-peak minute avoids the top-of-the-hour congestion that delays
+    # GitHub's best-effort cron by hours.
+    - cron: '23 1,7,13 * * *'
   workflow_dispatch:      # Allow manual trigger
 
 jobs:
