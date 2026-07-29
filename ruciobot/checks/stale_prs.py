@@ -7,7 +7,11 @@ since. A PR that is waiting on the *maintainers* is never closed for
 inactivity. That covers a PR that has never been reviewed, one with a pending
 review request, and one where the author has already responded to the last
 review and is waiting for another look. Such PRs are surfaced with a
-``needs-review`` label so reviewers can pick them up.
+``needs-review`` label once they are *review-starved*: no substantive review
+from anyone but the author for ``REVIEW_WAIT_DAYS`` weekdays, measured from
+the last review or from the PR's creation. Author pushes and bot comments do
+not reset that clock, so an actively updated PR that nobody reviews is still
+surfaced.
 
 PRs labeled ``failing-tests`` or ``needs-rebase`` are skipped: those checks
 run their own warn-and-close escalations and take precedence. Lingering
@@ -40,6 +44,12 @@ KIND_WARNING = "stale-warning"
 KIND_CLOSE = "stale-close"
 WARN_DAYS = 14
 CLOSE_DAYS = 7  # Weekdays after the stale warning before the PR is closed.
+
+# Weekdays without reviewer engagement before an awaiting-review PR is
+# surfaced with the needs-review label. Deliberately a separate clock from
+# the stale threshold: staleness measures author inactivity via updated_at,
+# review starvation measures reviewer attention only.
+REVIEW_WAIT_DAYS = 14
 
 # Which side a PR is waiting on.
 AWAITING_REVIEW = "awaiting_review"  # waiting on the maintainers
@@ -90,27 +100,37 @@ def process_pr(pr: PullRequest, days_until_stale: int) -> None:
 
     now = datetime.now(UTC)
     assert pr.updated_at is not None, f"PR #{pr.number} has no updated_at timestamp"
+    assert pr.created_at is not None, f"PR #{pr.number} has no created_at timestamp"
     inactive_days = count_business_days(_to_utc(pr.updated_at), now)
+    age_days = count_business_days(_to_utc(pr.created_at), now)
 
     labeled_stale = _has_label(pr, STALE_LABEL)
     labeled_needs_review = _has_label(pr, NEEDS_REVIEW_LABEL)
 
-    # Determining the responsible side is API-heavy (reviews, commits, comments),
-    # so skip it until there is something to act on: either the PR has been
-    # inactive long enough, or it carries a bot label that may need clearing
-    # after fresh activity.
-    if inactive_days < days_until_stale and not labeled_stale and not labeled_needs_review:
+    # Determining the responsible side is API-heavy (reviews, commits,
+    # comments), so skip PRs that cannot need any action yet. The gate runs
+    # on age, not inactivity: an actively pushed PR can still be starved of
+    # reviewer attention, but a PR younger than the thresholds can be neither
+    # review-starved (starvation time is bounded by age) nor stale, and
+    # without a bot label there is nothing to clear either.
+    if (
+        age_days < min(REVIEW_WAIT_DAYS, days_until_stale)
+        and not labeled_stale
+        and not labeled_needs_review
+    ):
         return
 
-    court = _court_of_responsibility(pr)
+    reviews = _safe_list(pr.get_reviews, "reviews")
+    court = _court_of_responsibility(pr, reviews)
 
     if court != AUTHOR_BLOCKED:
         # Not the author's turn, so this PR is never closed for staleness.
         if labeled_stale:
             _clear_stale_label(pr, "has new activity or is awaiting review")
         if court == AWAITING_REVIEW:
-            if inactive_days >= days_until_stale and not labeled_needs_review:
-                _flag_awaiting_review(pr, inactive_days)
+            starved_days = _review_starved_days(pr, reviews, now)
+            if starved_days >= REVIEW_WAIT_DAYS and not labeled_needs_review:
+                _flag_awaiting_review(pr, starved_days)
         elif labeled_needs_review:
             # APPROVED: it is now waiting on a merge, not a review.
             _clear_label(pr, NEEDS_REVIEW_LABEL, "is approved")
@@ -127,7 +147,7 @@ def process_pr(pr: PullRequest, days_until_stale: int) -> None:
         _mark_pr_stale(pr, days_until_stale)
 
 
-def _court_of_responsibility(pr: PullRequest) -> str:
+def _court_of_responsibility(pr: PullRequest, reviews: list) -> str:
     """Decide whether an open PR is waiting on the author, the maintainers, or a merge.
 
     - ``APPROVED``: an approving review exists, so it is waiting on a merge.
@@ -137,7 +157,6 @@ def _court_of_responsibility(pr: PullRequest) -> str:
       request, or the author acted most recently), so it is waiting on review.
     """
     author = _login(pr.user)
-    reviews = _safe_list(pr.get_reviews, "reviews")
 
     if any(r.state == "APPROVED" and _is_other(r, author) for r in reviews):
         return APPROVED
@@ -163,6 +182,26 @@ def _court_of_responsibility(pr: PullRequest) -> str:
     return AUTHOR_BLOCKED
 
 
+def _review_starved_days(pr: PullRequest, reviews: list, now: datetime) -> int:
+    """Weekdays since a reviewer last engaged with the PR.
+
+    Engagement is a substantive review by someone other than the author; a
+    never-reviewed PR is starved since its creation. Author pushes and bot
+    comments deliberately do not reset this clock: it measures how long the
+    PR has been waiting on reviewer attention, not general activity.
+    """
+    author = _login(pr.user)
+    engagement_times = [
+        _to_utc(r.submitted_at)
+        for r in reviews
+        if r.state in ("APPROVED", "CHANGES_REQUESTED", "COMMENTED")
+        and _is_other(r, author)
+        and r.submitted_at is not None
+    ]
+    last = max(engagement_times, default=_to_utc(pr.created_at))
+    return count_business_days(last, now)
+
+
 def _last_author_activity(pr: PullRequest, author: str | None) -> datetime | None:
     """Most recent time the author pushed a commit or left a comment."""
     times: list[datetime] = []
@@ -176,10 +215,10 @@ def _last_author_activity(pr: PullRequest, author: str | None) -> datetime | Non
     return max(times, default=None)
 
 
-def _flag_awaiting_review(pr: PullRequest, inactive_days: int) -> None:
-    """Label a review-blocked PR so reviewers can find it (no comment is posted)."""
+def _flag_awaiting_review(pr: PullRequest, starved_days: int) -> None:
+    """Label a review-starved PR so reviewers can find it (no comment is posted)."""
     print(
-        f"  [REVIEW] PR #{pr.number} has waited {inactive_days} weekdays for review. "
+        f"  [REVIEW] PR #{pr.number} has waited {starved_days} weekdays for review. "
         f"Labeling '{NEEDS_REVIEW_LABEL}'."
     )
     pr.add_to_labels(NEEDS_REVIEW_LABEL)
