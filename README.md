@@ -8,7 +8,7 @@ Responsible for PR merging in [rucio/ruciobot](https://github.com/rucio/ruciobot
 
 ## Checks
 
-**Stale PRs.** After a configurable number of weekdays without activity, the bot decides who the PR is waiting on. A PR is only marked stale, and eventually closed, when it is waiting on its *author*: a reviewer has engaged and the author has not pushed or replied since. A PR that is waiting on the *maintainers* is never closed for inactivity. That covers a PR that has never been reviewed, one with a pending review request, and one where the author has already responded to the last review. These are surfaced with a `needs-review` label instead, so reviewers can find them. Approved PRs are left alone, as they are waiting on a merge.
+**Stale PRs.** The bot decides who each PR is waiting on. A PR is only marked stale, and eventually closed, when it is waiting on its *author*: a reviewer has engaged and the author has not pushed or replied since. A PR that is waiting on the *maintainers* is never closed for inactivity. That covers a PR that has never been reviewed, one with a pending review request, and one where the author has already responded to the last review. These are surfaced with a `needs-review` label once no reviewer has engaged with them for fourteen weekdays, counted from the last review or from the PR's creation. Author activity does not reset that clock, so an actively updated PR that nobody reviews is still surfaced. Approved PRs are left alone, as they are waiting on a merge.
 
 **Failing tests.** A pull request with failing CI checks is warned after one weekday of inactivity. If it remains inactive and labeled for three more weekdays, it is closed.
 

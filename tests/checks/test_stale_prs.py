@@ -26,6 +26,7 @@ from ruciobot.checks.stale_prs import (
     CLOSE_DAYS,
     KIND_WARNING,
     NEEDS_REVIEW_LABEL,
+    REVIEW_WAIT_DAYS,
     STALE_LABEL,
     WARN_DAYS,
     process_pr,
@@ -95,6 +96,7 @@ def _comment(login, created_at):
 def make_pr(
     *,
     updated_at,
+    created_at=None,
     labels=None,
     author="alice",
     reviews=None,
@@ -108,6 +110,9 @@ def make_pr(
     pr.number = number
     pr.title = f"PR {number}"
     pr.updated_at = updated_at
+    # A PR is at least as old as its last update; tests that exercise the
+    # age gate or the starvation clock pass created_at explicitly.
+    pr.created_at = created_at or updated_at
     pr.user = _user(author) if author else None
     pr.labels = [SimpleNamespace(name=name) for name in (labels or [])]
     pr.get_reviews.return_value = list(reviews or [])
@@ -214,6 +219,47 @@ class TestStalePRs(unittest.TestCase):
         pr = make_pr(updated_at=PAST_STALE, requested_users=["bob"])
         run_check(pr)
         pr.add_to_labels.assert_called_once_with(NEEDS_REVIEW_LABEL)
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+
+    def test_old_active_pr_is_flagged_when_review_starved(self):
+        """An actively pushed but never-reviewed old PR is still surfaced.
+
+        The starvation clock ignores author activity, so a PR whose author
+        keeps rebasing (or that just came back from a needs-rebase or
+        failing-tests interlude) regains needs-review on the next run.
+        """
+        pr = make_pr(
+            updated_at=RECENT,  # author pushed two weekdays ago
+            created_at=business_days_before(40),
+            commits=[_commit(RECENT)],
+        )
+        run_check(pr)
+        pr.add_to_labels.assert_called_once_with(NEEDS_REVIEW_LABEL)
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+
+    def test_old_active_pr_with_stale_review_is_flagged(self):
+        """A recent author response to a long-past review still counts as starved."""
+        pr = make_pr(
+            updated_at=RECENT,
+            created_at=business_days_before(40),
+            reviews=[_review("COMMENTED", "bob", business_days_before(REVIEW_WAIT_DAYS + 6))],
+            commits=[_commit(RECENT)],  # author acted after the review: awaiting review
+        )
+        run_check(pr)
+        pr.add_to_labels.assert_called_once_with(NEEDS_REVIEW_LABEL)
+
+    def test_not_flagged_while_reviewer_recently_engaged(self):
+        """A reviewer look within REVIEW_WAIT_DAYS keeps the label off, even on an old PR."""
+        pr = make_pr(
+            updated_at=business_days_before(3),
+            created_at=business_days_before(40),
+            reviews=[_review("COMMENTED", "bob", business_days_before(5))],
+            commits=[_commit(business_days_before(3))],  # author acted most recently
+        )
+        run_check(pr)
+        pr.add_to_labels.assert_not_called()
         pr.create_issue_comment.assert_not_called()
         pr.edit.assert_not_called()
 
@@ -369,9 +415,13 @@ class TestStalePRs(unittest.TestCase):
         pr.create_issue_comment.assert_not_called()
         pr.edit.assert_not_called()
 
-    def test_active_pr_short_circuits_without_api_calls(self):
-        """A recently active, unlabeled PR returns before any review/commit lookups."""
-        pr = make_pr(updated_at=RECENT)
+    def test_young_pr_short_circuits_without_api_calls(self):
+        """A young, unlabeled PR returns before any review/commit lookups.
+
+        The gate runs on age, not inactivity: a PR younger than the
+        thresholds can be neither review-starved nor stale.
+        """
+        pr = make_pr(updated_at=RECENT, created_at=business_days_before(5))
         run_check(pr)
         pr.get_reviews.assert_not_called()
         pr.get_commits.assert_not_called()
