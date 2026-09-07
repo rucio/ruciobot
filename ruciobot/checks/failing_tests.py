@@ -1,9 +1,8 @@
 """
 Failing-tests check: warn after WARN_DAYS of inactivity, close after CLOSE_DAYS more.
 
-This check takes precedence over the needs-rebase and stale checks: a PR
-with failing tests is escalated here even if it also needs a rebase, since
-red CI is the most urgent signal and often implies a rebase is needed anyway.
+This check takes precedence over the needs-rebase and stale checks, but pauses
+while the higher-priority PR-template check owns the pull request.
 """
 
 from datetime import UTC, datetime
@@ -19,6 +18,7 @@ from .base import (
     latest_bot_comment,
     post_bot_comment,
 )
+from .pr_template import MISSING_TEMPLATE_LABEL
 
 FAILING_TESTS_LABEL = "failing-tests"
 FAILING_TESTS_WARN_DAYS = 1  # Days of inactivity before warning
@@ -47,6 +47,12 @@ def process_failing_test_pr(pr: PullRequest, repo) -> None:
     reason = exclusion_reason(pr)
     if reason:
         print(f"  [SKIP] PR #{pr.number} {reason}. Skipping.")
+        return
+    if MISSING_TEMPLATE_LABEL in [label.name for label in pr.labels]:
+        print(
+            f"  [SKIP] PR #{pr.number} has '{MISSING_TEMPLATE_LABEL}' label; "
+            "the PR-template check takes precedence. Pausing escalation."
+        )
         return
     now = datetime.now(UTC)
     assert pr.updated_at is not None, f"PR #{pr.number} has no updated_at timestamp"

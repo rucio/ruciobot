@@ -31,6 +31,7 @@ from ruciobot.checks.needs_rebase import (
     process_needs_rebase_pr,
     rebase_close_comment,
 )
+from ruciobot.checks.pr_template import MISSING_TEMPLATE_LABEL
 
 # Pinned "now": a Monday at noon UTC.
 NOW = datetime(2026, 3, 9, 12, 0, tzinfo=UTC)
@@ -191,6 +192,16 @@ class TestNeedsRebaseCheck(unittest.TestCase):
         self._run(pr)
         pr.create_issue_comment.assert_not_called()
         pr.add_to_labels.assert_not_called()
+
+    def test_missing_template_label_pauses_check(self):
+        """The higher-priority PR-template check owns missing-template PRs."""
+        pr = self._make_pr(20, mergeable=False, labels=[MISSING_TEMPLATE_LABEL])
+
+        self._run(pr)
+
+        pr.create_issue_comment.assert_not_called()
+        pr.add_to_labels.assert_not_called()
+        pr.update.assert_not_called()
 
     # Escalation: warn after NEEDS_REBASE_WARN_DAYS weekdays of inactivity
 

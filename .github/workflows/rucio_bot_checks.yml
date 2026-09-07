@@ -21,9 +21,16 @@ jobs:
       - name: Install RucioBot
         run: uv sync
 
-      # The checks run in precedence order (failing-tests > needs-rebase >
-      # stale), so the labels a higher-priority check applies are already in
-      # place when a lower-priority check decides whether to defer.
+      # The checks run in precedence order (pr-template > failing-tests >
+      # needs-rebase > stale), so the labels a higher-priority check applies
+      # are already in place when a lower-priority check decides whether to
+      # defer.
+      - name: Run PR Template Check
+        env:
+          RUCIO_BOT_APP_ID: ${{ secrets.RUCIO_BOT_APP_ID }}
+          RUCIO_BOT_PRIVATE_KEY: ${{ secrets.RUCIO_BOT_PRIVATE_KEY }}
+        run: uv run ruciobot --action pr-template --repo rucio/rucio
+
       - name: Run Failing Tests Check
         env:
           RUCIO_BOT_APP_ID: ${{ secrets.RUCIO_BOT_APP_ID }}

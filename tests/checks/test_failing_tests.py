@@ -27,6 +27,7 @@ from ruciobot.checks.failing_tests import (
     KIND_WARNING,
     process_failing_test_pr,
 )
+from ruciobot.checks.pr_template import MISSING_TEMPLATE_LABEL
 
 BOT_LOGIN = "ruciobot[bot]"
 
@@ -229,6 +230,19 @@ class TestFailingTestPRs(unittest.TestCase):
             self._mock_now(mock_dt)
             process_failing_test_pr(pr, repo)
         pr.add_to_labels.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+
+    def test_missing_template_label_pauses_check(self):
+        """The higher-priority PR-template check owns missing-template PRs."""
+        pr = self.create_mock_pr(
+            1, updated_at=CLOSE_DATE, labels=[MISSING_TEMPLATE_LABEL, FAILING_TESTS_LABEL]
+        )
+        repo = self.create_mock_repo(["failure"])
+
+        process_failing_test_pr(pr, repo)
+
+        repo.get_commit.assert_not_called()
         pr.create_issue_comment.assert_not_called()
         pr.edit.assert_not_called()
 

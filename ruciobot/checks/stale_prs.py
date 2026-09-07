@@ -18,10 +18,10 @@ GitHub's updated_at timestamp: bot comments and label changes must not reset
 the countdown. Closure has its own clock, starting with the stale warning
 or the latest human activity, whichever is later.
 
-PRs labeled ``failing-tests`` or ``needs-rebase`` are skipped: those checks
-run their own warn-and-close escalations and take precedence. Lingering
-``stale`` or ``needs-review`` labels are cleared on the way out so they do
-not outlive the countdown they belonged to.
+PRs labelled ``missing-template``, ``failing-tests`` or ``needs-rebase`` are
+skipped: those checks run their own warn-and-close escalations and take
+precedence. Lingering ``stale`` or ``needs-review`` labels are cleared on the
+way out so they do not outlive the countdown they belonged to.
 """
 
 from datetime import UTC, datetime
@@ -40,6 +40,7 @@ from .base import (
 )
 from .failing_tests import FAILING_TESTS_LABEL
 from .needs_rebase import NEEDS_REBASE_LABEL
+from .pr_template import MISSING_TEMPLATE_LABEL
 
 STALE_LABEL = "stale"
 NEEDS_REVIEW_LABEL = "needs-review"
@@ -87,12 +88,11 @@ def process_pr(pr: PullRequest, days_until_stale: int) -> None:
         print(f"  [SKIP] PR #{pr.number} {reason}. Skipping.")
         return
 
-    # Failing-tests and conflicted PRs are owned by their respective checks,
-    # which run their own warn-and-close escalations, so this check's
-    # countdown must not compete with them. Lingering labels from this check
-    # are lifted on the way out so they do not outlive the countdown they
-    # belonged to.
-    for owner_label in (FAILING_TESTS_LABEL, NEEDS_REBASE_LABEL):
+    # Higher-priority PRs are owned by their respective checks, which run their
+    # own warn-and-close escalations, so this check's countdown must not compete
+    # with them. Lingering labels from this check are lifted on the way out so
+    # they do not outlive the countdown they belonged to.
+    for owner_label in (MISSING_TEMPLATE_LABEL, FAILING_TESTS_LABEL, NEEDS_REBASE_LABEL):
         if _has_label(pr, owner_label):
             print(
                 f"  [SKIP] PR #{pr.number} has '{owner_label}' label; "

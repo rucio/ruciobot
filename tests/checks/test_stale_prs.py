@@ -24,6 +24,7 @@ from github.GithubException import GithubException
 from ruciobot.checks.base import NO_BOT_LABEL, bot_marker, set_bot_login
 from ruciobot.checks.failing_tests import FAILING_TESTS_LABEL
 from ruciobot.checks.needs_rebase import NEEDS_REBASE_LABEL
+from ruciobot.checks.pr_template import MISSING_TEMPLATE_LABEL
 from ruciobot.checks.stale_prs import (
     CLOSE_DAYS,
     KIND_WARNING,
@@ -519,6 +520,23 @@ class TestStalePRs(unittest.TestCase):
             reviews=[_review("CHANGES_REQUESTED", "bob", OLD_REVIEW)],
         )
         run_check(pr)
+        pr.add_to_labels.assert_not_called()
+        pr.create_issue_comment.assert_not_called()
+        pr.edit.assert_not_called()
+        pr.get_reviews.assert_not_called()
+
+    def test_missing_template_skip_clears_lingering_bot_labels(self):
+        """The template check owns the PR and stale-check labels are lifted."""
+        pr = make_pr(
+            updated_at=PAST_STALE,
+            labels=[MISSING_TEMPLATE_LABEL, STALE_LABEL, NEEDS_REVIEW_LABEL],
+            reviews=[_review("CHANGES_REQUESTED", "bob", OLD_REVIEW)],
+        )
+
+        run_check(pr)
+
+        removed = [call.args[0] for call in pr.remove_from_labels.call_args_list]
+        self.assertEqual(sorted(removed), sorted([STALE_LABEL, NEEDS_REVIEW_LABEL]))
         pr.add_to_labels.assert_not_called()
         pr.create_issue_comment.assert_not_called()
         pr.edit.assert_not_called()

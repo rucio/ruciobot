@@ -9,9 +9,10 @@ closed. Whether the warning was already issued is tracked through the kind
 marker of the bot's single comment; the comment is removed once the conflicts
 are resolved, so a later conflict starts a fresh cycle.
 
-A PR that also carries the ``failing-tests`` label is left to the
-failing-tests check, which takes precedence: the escalation pauses while
-that label is present, though flagging and label clearing still run.
+A PR carrying ``missing-template`` is left entirely to the PR-template check.
+A PR that also carries ``failing-tests`` is left to the failing-tests check:
+the escalation pauses while that label is present, though flagging and label
+clearing still run.
 """
 
 import time
@@ -29,6 +30,7 @@ from .base import (
     post_bot_comment,
 )
 from .failing_tests import FAILING_TESTS_LABEL
+from .pr_template import MISSING_TEMPLATE_LABEL
 
 NEEDS_REBASE_LABEL = "needs-rebase"
 NEEDS_REBASE_WARN_DAYS = 5  # Weekdays of inactivity before the closure warning.
@@ -94,6 +96,12 @@ def process_needs_rebase_pr(pr: PullRequest) -> None:
     reason = exclusion_reason(pr)
     if reason:
         print(f"  [SKIP] PR #{pr.number} {reason}. Skipping.")
+        return
+    if MISSING_TEMPLATE_LABEL in [label.name for label in pr.labels]:
+        print(
+            f"  [SKIP] PR #{pr.number} has '{MISSING_TEMPLATE_LABEL}' label; "
+            "the PR-template check takes precedence. Skipping."
+        )
         return
 
     mergeable = _resolve_mergeable(pr)  # None = GitHub couldn't compute it; False = conflicts
